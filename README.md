@@ -2,27 +2,48 @@
 
 ## Overview
 
-A comprehensive Bash-based diagnostic tool for Linux servers that automatically detects performance bottlenecks and can create AWS Support cases with detailed forensic data. Uses only open-source utilities available on standard Linux distributions.
+A comprehensive Bash-based diagnostic tool for Linux servers that automatically detects performance bottlenecks and can create AWS Support cases with detailed forensic data. Uses only open-source utilities and automatically installs missing dependencies when possible.
 
 **Key Features:**
 - ✅ Comprehensive performance forensics (CPU, Memory, Disk, Network)
 - ✅ Automated bottleneck detection
-- ✅ Disk I/O performance testing (native tools only)
-- ✅ CPU forensics (load average, context switches, steal time)
-- ✅ Memory forensics (OOM detection, swap analysis, page faults)
-- ✅ Network analysis (connection states, retransmissions, errors)
+- ✅ **Automatic dependency installation** (Debian/Ubuntu, RHEL/CentOS/Amazon Linux)
+- ✅ Multi-distro support with intelligent fallbacks
+- ✅ CPU forensics (load average, context switches, steal time, thread analysis)
+- ✅ Memory forensics (OOM detection, swap analysis, page faults, slab memory, leak detection)
+- ✅ Disk I/O testing (usage, wait times, read/write performance)
+- ✅ Network analysis (connection states, retransmissions, errors, dropped packets)
 - ✅ **Automatic AWS Support case creation** with diagnostic data
-- ✅ Works across all major distributions (Ubuntu, RHEL, Amazon Linux, CentOS, Debian)
+- ✅ Graceful degradation when tools unavailable
 
 ---
 
 ## 🚀 **Quick Start**
 
 ### **Prerequisites**
-- Linux server (any major distribution)
+- Linux/Unix server (see supported OS list below)
 - Root or sudo privileges
-- Standard utilities: `mpstat`, `iostat`, `vmstat`, `netstat` (usually pre-installed)
+- Bash shell (script will auto-detect and provide instructions if missing)
 - AWS CLI (optional, for support case creation)
+
+### **Supported Operating Systems**
+
+**Fully Supported (Automatic Package Installation):**
+- Ubuntu 18.04+
+- Debian 9+
+- RHEL 7+, 8+, 9+
+- CentOS 7+, 8+
+- Amazon Linux 2, 2023
+- Rocky Linux 8+, 9+
+- AlmaLinux 8+, 9+
+- Fedora (recent versions)
+- SUSE Linux Enterprise Server
+
+**Supported (Manual Package Installation):**
+- AIX 7.1+ (requires AIX Toolbox packages)
+- HP-UX 11i v3+ (requires Software Depot packages)
+
+**Note:** The script automatically detects your OS and installs missing utilities (sysstat, net-tools, bc) when possible. For AIX and HP-UX, manual installation instructions are provided.
 
 ### **Installation**
 
@@ -52,12 +73,53 @@ sudo ./invoke-linux-forensics.sh
 <details>
 <summary><strong>What it does</strong></summary>
 
-- Collects system information (OS, kernel, hardware, EC2 metadata)
-- Analyzes CPU performance (load average, usage, context switches, steal time)
-- Performs memory forensics (usage, swap, page faults, OOM detection)
-- Tests disk I/O performance (usage, wait times, read/write speeds)
-- Analyzes network performance (connections, retransmissions, errors)
-- **Automatically identifies bottlenecks**
+**System Detection & Setup:**
+- Automatically detects OS distribution and version
+- Identifies available package manager (apt, yum, dnf, zypper)
+- Checks for required utilities (mpstat, iostat, vmstat, netstat, bc)
+- **Automatically installs missing packages** on supported distros
+- Provides manual installation instructions for AIX/HP-UX
+- Continues with graceful degradation if tools unavailable
+
+**CPU Forensics:**
+- Load average analysis (per-core calculation)
+- CPU utilization sampling (10-second average)
+- Context switch rate monitoring
+- CPU steal time detection (hypervisor contention)
+- Top CPU-consuming processes
+
+**Memory Forensics:**
+- Memory usage and availability analysis
+- Swap usage monitoring
+- Page fault rate detection
+- Memory pressure indicators (PSI)
+- Slab memory usage analysis
+- OOM (Out of Memory) killer detection
+- Memory leak candidate identification
+- Huge pages status
+- Top memory-consuming processes
+
+**Disk I/O Forensics:**
+- Filesystem usage monitoring
+- I/O wait time analysis
+- Read/write performance testing (dd-based)
+- Dropped I/O detection
+- Per-device statistics
+
+**Network Forensics:**
+- Interface status and statistics
+- TCP connection state analysis
+- Retransmission detection
+- RX/TX error monitoring
+- Dropped packet analysis
+- Socket memory usage
+- Network throughput analysis
+- Buffer/queue settings
+
+**Bottleneck Detection:**
+- Automatically identifies performance issues
+- Categorizes by severity (Critical, High, Medium, Low)
+- Provides threshold comparisons
 - **Creates AWS Support case** with all diagnostic data
 
 </details>
@@ -209,7 +271,7 @@ The tool automatically detects:
 - High load average (>1.0 per core)
 - High CPU utilization (>80%)
 - Excessive context switches (>15,000/sec)
-- High CPU steal time (>10% - hypervisor contention)
+- High CPU steal time (>10% - indicates hypervisor/VM contention)
 
 </details>
 
@@ -220,6 +282,7 @@ The tool automatically detects:
 - High swap usage (>50%)
 - High page fault rate (>1,000/sec)
 - OOM (Out of Memory) killer invocations
+- Memory leak candidates (high virtual, low resident memory)
 
 </details>
 
@@ -227,7 +290,7 @@ The tool automatically detects:
 <summary><strong>Disk Issues</strong></summary>
 
 - Filesystem nearly full (>90%)
-- High I/O wait time (>20ms)
+- High I/O wait time (>20ms average)
 - Poor read/write performance
 
 </details>
@@ -236,8 +299,10 @@ The tool automatically detects:
 <summary><strong>Network Issues</strong></summary>
 
 - Excessive TIME_WAIT connections (>5,000)
-- High TCP retransmissions
-- Network interface errors
+- Excessive CLOSE_WAIT connections (>1,000)
+- High TCP retransmissions (>100)
+- High RX/TX errors (>100)
+- Network packet drops
 
 </details>
 
@@ -302,17 +367,60 @@ aws support describe-services
 <details>
 <summary><strong>Missing Utilities</strong></summary>
 
-Install required utilities if missing:
+**The script automatically handles missing utilities on supported distributions.**
 
-**RHEL / CentOS / Amazon Linux:**
+If automatic installation fails, install manually:
+
+**RHEL / CentOS / Amazon Linux / Rocky / Alma:**
 ```bash
-sudo yum install -y sysstat net-tools
+sudo yum install -y sysstat net-tools bc
+# or
+sudo dnf install -y sysstat net-tools bc
 ```
 
 **Ubuntu / Debian:**
 ```bash
-sudo apt-get install -y sysstat net-tools
+sudo apt-get update
+sudo apt-get install -y sysstat net-tools bc
 ```
+
+**SUSE:**
+```bash
+sudo zypper install -y sysstat net-tools bc
+```
+
+**AIX:**
+- Install from AIX Toolbox: https://www.ibm.com/support/pages/aix-toolbox-linux-applications
+- Or use: `rpm -ivh <package>.rpm`
+
+**HP-UX:**
+- Install from HP-UX Software Depot
+- Use: `swinstall -s /path/to/depot <package>`
+
+**Note:** The script will continue with limited functionality if some tools are unavailable, using fallback methods where possible.
+
+</details>
+
+<details>
+<summary><strong>Bash Not Available</strong></summary>
+
+If you see "bash not found" error:
+
+**RHEL / CentOS:**
+```bash
+yum install bash
+```
+
+**Ubuntu / Debian:**
+```bash
+apt-get install bash
+```
+
+**AIX:**
+- Install bash.rte from AIX Toolbox
+
+**HP-UX:**
+- Install bash from HP-UX Software Depot
 
 </details>
 
@@ -324,6 +432,12 @@ The script requires root privileges:
 sudo ./invoke-linux-forensics.sh
 ```
 
+Or run as root:
+```bash
+su -
+./invoke-linux-forensics.sh
+```
+
 </details>
 
 <details>
@@ -333,6 +447,18 @@ sudo ./invoke-linux-forensics.sh
 - Check credentials: `aws sts get-caller-identity`
 - Ensure Support plan is active (Business or Enterprise)
 - Verify IAM permissions for support:CreateCase
+
+</details>
+
+<details>
+<summary><strong>Package Installation Fails</strong></summary>
+
+The script provides detailed diagnostics when package installation fails, including:
+- Repository configuration status
+- Disk space availability
+- Manual installation commands
+
+Check the output for specific guidance based on your system.
 
 </details>
 
@@ -359,8 +485,11 @@ For AWS-specific issues, the tool can automatically create support cases with di
 
 - This tool requires root/sudo privileges
 - Disk testing may impact system performance temporarily
-- Tested on Ubuntu 18.04+, RHEL 7+, Amazon Linux 2/2023, CentOS 7+, Debian 9+
-- Works on AWS EC2, Azure VMs, GCP Compute, and on-premises
+- **Automatic package installation** works on Debian/Ubuntu, RHEL/CentOS/Amazon Linux, and SUSE
+- **Manual installation required** for AIX and HP-UX (instructions provided by script)
+- Script uses **graceful degradation** - continues with available tools if some are missing
+- Tested on Ubuntu 18.04+, RHEL 7+, Amazon Linux 2/2023, CentOS 7+, Debian 9+, Rocky Linux 8+, AlmaLinux 8+
+- Works on AWS EC2, Azure VMs, GCP Compute, on-premises, and other cloud providers
 - Uses only open-source utilities (no proprietary tools required)
 - **No warranty or official support provided** - use at your own discretion
 
