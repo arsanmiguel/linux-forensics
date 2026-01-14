@@ -735,6 +735,223 @@ analyze_disk() {
 }
 
 #############################################################################
+# Database Forensics
+#############################################################################
+
+analyze_databases() {
+    print_header "DATABASE FORENSICS"
+    
+    log_info "Scanning for database processes and connections..."
+    
+    local databases_found=false
+    
+    # MySQL/MariaDB Detection
+    if pgrep -x mysqld >/dev/null 2>&1 || pgrep -x mariadbd >/dev/null 2>&1; then
+        databases_found=true
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "=== MySQL/MariaDB Detected ===" | tee -a "$OUTPUT_FILE"
+        
+        # Process info
+        ps aux | grep -E "[m]ysqld|[m]ariadbd" | awk '{printf "  Process: PID %s, CPU: %s%%, MEM: %s%%\n", $2, $3, $4}' | tee -a "$OUTPUT_FILE"
+        
+        # Connection count
+        local mysql_conns=$(netstat -ant 2>/dev/null | grep :3306 | grep ESTABLISHED | wc -l || echo "0")
+        echo "  Active Connections: ${mysql_conns}" | tee -a "$OUTPUT_FILE"
+        
+        if (( mysql_conns > 500 )); then
+            log_bottleneck "Database" "High MySQL connection count" "${mysql_conns}" "500" "Medium"
+        fi
+        
+        # Check for slow query log
+        if [[ -f /var/log/mysql/slow.log ]] || [[ -f /var/log/mysql/mysql-slow.log ]]; then
+            local slow_queries=$(find /var/log/mysql/ -name "*slow*" -type f -exec wc -l {} \; 2>/dev/null | awk '{sum+=$1} END {print sum}')
+            if [[ -n "$slow_queries" ]] && (( slow_queries > 100 )); then
+                echo "  ⚠️  Slow Query Log: ${slow_queries} entries" | tee -a "$OUTPUT_FILE"
+                log_bottleneck "Database" "MySQL slow queries detected" "${slow_queries}" "100" "Medium"
+            fi
+        fi
+        
+        # Check data directory size
+        if [[ -d /var/lib/mysql ]]; then
+            local mysql_size=$(du -sh /var/lib/mysql 2>/dev/null | awk '{print $1}')
+            echo "  Data Directory Size: ${mysql_size}" | tee -a "$OUTPUT_FILE"
+        fi
+    fi
+    
+    # PostgreSQL Detection
+    if pgrep -x postgres >/dev/null 2>&1 || pgrep -x postmaster >/dev/null 2>&1; then
+        databases_found=true
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "=== PostgreSQL Detected ===" | tee -a "$OUTPUT_FILE"
+        
+        # Process info
+        ps aux | grep -E "[p]ostgres|[p]ostmaster" | head -1 | awk '{printf "  Process: PID %s, CPU: %s%%, MEM: %s%%\n", $2, $3, $4}' | tee -a "$OUTPUT_FILE"
+        
+        # Connection count
+        local pg_conns=$(netstat -ant 2>/dev/null | grep :5432 | grep ESTABLISHED | wc -l || echo "0")
+        echo "  Active Connections: ${pg_conns}" | tee -a "$OUTPUT_FILE"
+        
+        if (( pg_conns > 500 )); then
+            log_bottleneck "Database" "High PostgreSQL connection count" "${pg_conns}" "500" "Medium"
+        fi
+        
+        # Check for connection pooling
+        if pgrep -x pgbouncer >/dev/null 2>&1; then
+            echo "  ✓ PgBouncer connection pooler detected" | tee -a "$OUTPUT_FILE"
+        fi
+        
+        # Check data directory size
+        if [[ -d /var/lib/postgresql ]]; then
+            local pg_size=$(du -sh /var/lib/postgresql 2>/dev/null | awk '{print $1}')
+            echo "  Data Directory Size: ${pg_size}" | tee -a "$OUTPUT_FILE"
+        fi
+    fi
+    
+    # MongoDB Detection
+    if pgrep -x mongod >/dev/null 2>&1; then
+        databases_found=true
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "=== MongoDB Detected ===" | tee -a "$OUTPUT_FILE"
+        
+        # Process info
+        ps aux | grep "[m]ongod" | awk '{printf "  Process: PID %s, CPU: %s%%, MEM: %s%%\n", $2, $3, $4}' | tee -a "$OUTPUT_FILE"
+        
+        # Connection count
+        local mongo_conns=$(netstat -ant 2>/dev/null | grep :27017 | grep ESTABLISHED | wc -l || echo "0")
+        echo "  Active Connections: ${mongo_conns}" | tee -a "$OUTPUT_FILE"
+        
+        if (( mongo_conns > 1000 )); then
+            log_bottleneck "Database" "High MongoDB connection count" "${mongo_conns}" "1000" "Medium"
+        fi
+        
+        # Check data directory size
+        if [[ -d /var/lib/mongodb ]] || [[ -d /data/db ]]; then
+            local mongo_size=$(du -sh /var/lib/mongodb /data/db 2>/dev/null | awk '{print $1}' | head -1)
+            echo "  Data Directory Size: ${mongo_size}" | tee -a "$OUTPUT_FILE"
+        fi
+    fi
+    
+    # Cassandra Detection
+    if pgrep -f "org.apache.cassandra" >/dev/null 2>&1; then
+        databases_found=true
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "=== Cassandra Detected ===" | tee -a "$OUTPUT_FILE"
+        
+        # Process info
+        ps aux | grep "[o]rg.apache.cassandra" | awk '{printf "  Process: PID %s, CPU: %s%%, MEM: %s%%\n", $2, $3, $4}' | tee -a "$OUTPUT_FILE"
+        
+        # Connection count (native transport port)
+        local cass_conns=$(netstat -ant 2>/dev/null | grep :9042 | grep ESTABLISHED | wc -l || echo "0")
+        echo "  Active Connections: ${cass_conns}" | tee -a "$OUTPUT_FILE"
+        
+        if (( cass_conns > 1000 )); then
+            log_bottleneck "Database" "High Cassandra connection count" "${cass_conns}" "1000" "Medium"
+        fi
+        
+        # Check data directory size
+        if [[ -d /var/lib/cassandra ]]; then
+            local cass_size=$(du -sh /var/lib/cassandra 2>/dev/null | awk '{print $1}')
+            echo "  Data Directory Size: ${cass_size}" | tee -a "$OUTPUT_FILE"
+        fi
+    fi
+    
+    # Redis Detection
+    if pgrep -x redis-server >/dev/null 2>&1; then
+        databases_found=true
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "=== Redis Detected ===" | tee -a "$OUTPUT_FILE"
+        
+        # Process info
+        ps aux | grep "[r]edis-server" | awk '{printf "  Process: PID %s, CPU: %s%%, MEM: %s%%\n", $2, $3, $4}' | tee -a "$OUTPUT_FILE"
+        
+        # Connection count
+        local redis_conns=$(netstat -ant 2>/dev/null | grep :6379 | grep ESTABLISHED | wc -l || echo "0")
+        echo "  Active Connections: ${redis_conns}" | tee -a "$OUTPUT_FILE"
+        
+        if (( redis_conns > 10000 )); then
+            log_bottleneck "Database" "High Redis connection count" "${redis_conns}" "10000" "Medium"
+        fi
+    fi
+    
+    # Oracle Detection
+    if pgrep -x oracle >/dev/null 2>&1 || pgrep -f "ora_pmon" >/dev/null 2>&1; then
+        databases_found=true
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "=== Oracle Database Detected ===" | tee -a "$OUTPUT_FILE"
+        
+        # Process info
+        ps aux | grep "[o]ra_pmon" | awk '{printf "  Process: PID %s, CPU: %s%%, MEM: %s%%\n", $2, $3, $4}' | tee -a "$OUTPUT_FILE"
+        
+        # Connection count (default listener port)
+        local oracle_conns=$(netstat -ant 2>/dev/null | grep :1521 | grep ESTABLISHED | wc -l || echo "0")
+        echo "  Active Connections: ${oracle_conns}" | tee -a "$OUTPUT_FILE"
+        
+        if (( oracle_conns > 500 )); then
+            log_bottleneck "Database" "High Oracle connection count" "${oracle_conns}" "500" "Medium"
+        fi
+    fi
+    
+    # Microsoft SQL Server Detection (Linux)
+    if pgrep -x sqlservr >/dev/null 2>&1; then
+        databases_found=true
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "=== SQL Server Detected ===" | tee -a "$OUTPUT_FILE"
+        
+        # Process info
+        ps aux | grep "[s]qlservr" | awk '{printf "  Process: PID %s, CPU: %s%%, MEM: %s%%\n", $2, $3, $4}' | tee -a "$OUTPUT_FILE"
+        
+        # Connection count
+        local mssql_conns=$(netstat -ant 2>/dev/null | grep :1433 | grep ESTABLISHED | wc -l || echo "0")
+        echo "  Active Connections: ${mssql_conns}" | tee -a "$OUTPUT_FILE"
+        
+        if (( mssql_conns > 500 )); then
+            log_bottleneck "Database" "High SQL Server connection count" "${mssql_conns}" "500" "Medium"
+        fi
+    fi
+    
+    # Elasticsearch Detection
+    if pgrep -f "org.elasticsearch" >/dev/null 2>&1; then
+        databases_found=true
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "=== Elasticsearch Detected ===" | tee -a "$OUTPUT_FILE"
+        
+        # Process info
+        ps aux | grep "[o]rg.elasticsearch" | awk '{printf "  Process: PID %s, CPU: %s%%, MEM: %s%%\n", $2, $3, $4}' | tee -a "$OUTPUT_FILE"
+        
+        # Connection count
+        local es_conns=$(netstat -ant 2>/dev/null | grep :9200 | grep ESTABLISHED | wc -l || echo "0")
+        echo "  Active Connections: ${es_conns}" | tee -a "$OUTPUT_FILE"
+        
+        # Check data directory size
+        if [[ -d /var/lib/elasticsearch ]]; then
+            local es_size=$(du -sh /var/lib/elasticsearch 2>/dev/null | awk '{print $1}')
+            echo "  Data Directory Size: ${es_size}" | tee -a "$OUTPUT_FILE"
+        fi
+    fi
+    
+    # General database connection analysis
+    if [[ "$databases_found" == true ]]; then
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "=== Database Connection Summary ===" | tee -a "$OUTPUT_FILE"
+        
+        # Check for connection pool exhaustion indicators
+        local total_db_conns=$(netstat -ant 2>/dev/null | grep -E ":3306|:5432|:27017|:9042|:6379|:1521|:1433|:9200" | grep ESTABLISHED | wc -l || echo "0")
+        echo "Total Database Connections: ${total_db_conns}" | tee -a "$OUTPUT_FILE"
+        
+        # Check for TIME_WAIT on database ports (connection churn)
+        local db_time_wait=$(netstat -ant 2>/dev/null | grep -E ":3306|:5432|:27017|:9042|:6379|:1521|:1433|:9200" | grep TIME_WAIT | wc -l || echo "0")
+        if (( db_time_wait > 1000 )); then
+            echo "  ⚠️  High TIME_WAIT on database ports: ${db_time_wait}" | tee -a "$OUTPUT_FILE"
+            log_bottleneck "Database" "High connection churn (TIME_WAIT)" "${db_time_wait}" "1000" "Medium"
+        fi
+        
+        log_success "Database forensics completed"
+    else
+        log_info "No common database processes detected"
+    fi
+}
+
+#############################################################################
 # Network Forensics
 #############################################################################
 
@@ -1107,12 +1324,14 @@ main() {
             analyze_cpu
             analyze_memory
             analyze_disk
+            analyze_databases
             analyze_network
             ;;
         deep)
             analyze_cpu
             analyze_memory
             analyze_disk
+            analyze_databases
             analyze_network
             ;;
         disk)

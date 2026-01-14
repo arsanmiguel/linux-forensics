@@ -5,13 +5,14 @@
 A comprehensive Bash-based diagnostic tool for Linux servers that automatically detects performance bottlenecks and can create AWS Support cases with detailed forensic data. Uses only open-source utilities and automatically installs missing dependencies when possible.
 
 **Key Features:**
-- ✅ Comprehensive performance forensics (CPU, Memory, Disk, Network)
+- ✅ Comprehensive performance forensics (CPU, Memory, Disk, Network, Database)
 - ✅ Automated bottleneck detection
 - ✅ **Automatic dependency installation** (Debian/Ubuntu, RHEL/CentOS/Amazon Linux)
 - ✅ Multi-distro support with intelligent fallbacks
 - ✅ CPU forensics (load average, context switches, steal time, thread analysis)
 - ✅ Memory forensics (OOM detection, swap analysis, page faults, slab memory, leak detection)
 - ✅ Disk I/O testing (usage, wait times, read/write performance)
+- ✅ **Database forensics** (MySQL, PostgreSQL, MongoDB, Cassandra, Redis, Oracle, SQL Server, Elasticsearch)
 - ✅ Network analysis (connection states, retransmissions, errors, dropped packets)
 - ✅ **Automatic AWS Support case creation** with diagnostic data
 - ✅ Graceful degradation when tools unavailable
@@ -105,6 +106,16 @@ sudo ./invoke-linux-forensics.sh
 - Read/write performance testing (dd-based)
 - Dropped I/O detection
 - Per-device statistics
+
+**Database Forensics:**
+- Automatic detection of running databases
+- Supported: MySQL/MariaDB, PostgreSQL, MongoDB, Cassandra, Redis, Oracle, SQL Server, Elasticsearch
+- Connection count monitoring
+- Process resource usage (CPU, memory)
+- Data directory size analysis
+- Slow query detection (MySQL)
+- Connection pooling detection (PostgreSQL)
+- Connection churn analysis (TIME_WAIT)
 
 **Network Forensics:**
 - Interface status and statistics
@@ -292,6 +303,26 @@ The tool automatically detects:
 - Filesystem nearly full (>90%)
 - High I/O wait time (>20ms average)
 - Poor read/write performance
+
+</details>
+
+<details>
+<summary><strong>Database Issues</strong></summary>
+
+- High connection count (MySQL/PostgreSQL/Oracle/SQL Server: >500, MongoDB/Cassandra: >1000, Redis: >10,000)
+- Slow queries detected (MySQL: >100 slow query log entries)
+- High connection churn (>1,000 TIME_WAIT connections on database ports)
+- Excessive resource usage by database processes
+
+**Supported Databases:**
+- MySQL / MariaDB
+- PostgreSQL
+- MongoDB
+- Cassandra
+- Redis
+- Oracle Database
+- Microsoft SQL Server (Linux)
+- Elasticsearch
 
 </details>
 
