@@ -762,19 +762,20 @@ analyze_databases() {
             log_bottleneck "Database" "High MySQL connection count" "${mysql_conns}" "500" "Medium"
         fi
         
-        # Check for slow query log
-        if [[ -f /var/log/mysql/slow.log ]] || [[ -f /var/log/mysql/mysql-slow.log ]]; then
-            local slow_queries=$(find /var/log/mysql/ -name "*slow*" -type f -exec wc -l {} \; 2>/dev/null | awk '{sum+=$1} END {print sum}')
-            if [[ -n "$slow_queries" ]] && (( slow_queries > 100 )); then
-                echo "  ⚠️  Slow Query Log: ${slow_queries} entries" | tee -a "$OUTPUT_FILE"
-                log_bottleneck "Database" "MySQL slow queries detected" "${slow_queries}" "100" "Medium"
+        # MySQL Query Analysis
+        if command -v mysql >/dev/null 2>&1; then
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "  MySQL Query Analysis:" | tee -a "$OUTPUT_FILE"
+            
+            mysql -u root -e "SELECT ID, USER, HOST, DB, COMMAND, TIME, STATE, LEFT(INFO, 100) AS QUERY FROM information_schema.PROCESSLIST WHERE COMMAND != 'Sleep' AND TIME > 30 ORDER BY TIME DESC LIMIT 5;" 2>/dev/null | tee -a "$OUTPUT_FILE" || echo "  Unable to query MySQL (requires authentication)" | tee -a "$OUTPUT_FILE"
+            
+            mysql -u root -e "SELECT DIGEST_TEXT AS query, COUNT_STAR AS exec_count, ROUND(AVG_TIMER_WAIT/1000000000, 2) AS avg_time_ms, ROUND(SUM_TIMER_WAIT/1000000000, 2) AS total_time_ms, ROUND(SUM_ROWS_EXAMINED/COUNT_STAR, 0) AS avg_rows_examined FROM performance_schema.events_statements_summary_by_digest ORDER BY SUM_TIMER_WAIT DESC LIMIT 5;" 2>/dev/null | tee -a "$OUTPUT_FILE"
+            
+            # Check for long-running queries
+            local long_running=$(mysql -u root -N -e "SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE COMMAND != 'Sleep' AND TIME > 30;" 2>/dev/null)
+            if [[ -n "$long_running" ]] && (( long_running > 0 )); then
+                log_bottleneck "Database" "Long-running MySQL queries detected (>30s)" "Yes" "30s" "High"
             fi
-        fi
-        
-        # Check data directory size
-        if [[ -d /var/lib/mysql ]]; then
-            local mysql_size=$(du -sh /var/lib/mysql 2>/dev/null | awk '{print $1}')
-            echo "  Data Directory Size: ${mysql_size}" | tee -a "$OUTPUT_FILE"
         fi
     fi
     
@@ -795,15 +796,20 @@ analyze_databases() {
             log_bottleneck "Database" "High PostgreSQL connection count" "${pg_conns}" "500" "Medium"
         fi
         
-        # Check for connection pooling
-        if pgrep -x pgbouncer >/dev/null 2>&1; then
-            echo "  ✓ PgBouncer connection pooler detected" | tee -a "$OUTPUT_FILE"
-        fi
-        
-        # Check data directory size
-        if [[ -d /var/lib/postgresql ]]; then
-            local pg_size=$(du -sh /var/lib/postgresql 2>/dev/null | awk '{print $1}')
-            echo "  Data Directory Size: ${pg_size}" | tee -a "$OUTPUT_FILE"
+        # PostgreSQL Query Analysis
+        if command -v psql >/dev/null 2>&1; then
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "  PostgreSQL Query Analysis:" | tee -a "$OUTPUT_FILE"
+            
+            psql -U postgres -c "SELECT pid, usename, application_name, state, EXTRACT(EPOCH FROM (now() - query_start)) AS duration_seconds, LEFT(query, 100) AS query FROM pg_stat_activity WHERE state != 'idle' AND query NOT LIKE '%pg_stat_activity%' ORDER BY duration_seconds DESC LIMIT 5;" 2>/dev/null | tee -a "$OUTPUT_FILE" || echo "  Unable to query PostgreSQL (requires authentication)" | tee -a "$OUTPUT_FILE"
+            
+            psql -U postgres -c "SELECT query, calls, ROUND(total_exec_time::numeric, 2) AS total_time_ms, ROUND(mean_exec_time::numeric, 2) AS avg_time_ms, ROUND((100 * total_exec_time / SUM(total_exec_time) OVER ())::numeric, 2) AS pct_total FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 5;" 2>/dev/null | tee -a "$OUTPUT_FILE"
+            
+            # Check for long-running queries
+            local long_running=$(psql -U postgres -t -c "SELECT COUNT(*) FROM pg_stat_activity WHERE state != 'idle' AND EXTRACT(EPOCH FROM (now() - query_start)) > 30;" 2>/dev/null | tr -d ' ')
+            if [[ -n "$long_running" ]] && (( long_running > 0 )); then
+                log_bottleneck "Database" "Long-running PostgreSQL queries detected (>30s)" "Yes" "30s" "High"
+            fi
         fi
     fi
     
@@ -824,10 +830,21 @@ analyze_databases() {
             log_bottleneck "Database" "High MongoDB connection count" "${mongo_conns}" "1000" "Medium"
         fi
         
-        # Check data directory size
-        if [[ -d /var/lib/mongodb ]] || [[ -d /data/db ]]; then
-            local mongo_size=$(du -sh /var/lib/mongodb /data/db 2>/dev/null | awk '{print $1}' | head -1)
-            echo "  Data Directory Size: ${mongo_size}" | tee -a "$OUTPUT_FILE"
+        # MongoDB Query Analysis
+        if command -v mongo >/dev/null 2>&1 || command -v mongosh >/dev/null 2>&1; then
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "  MongoDB Query Analysis:" | tee -a "$OUTPUT_FILE"
+            
+            local mongo_cmd="mongo"
+            command -v mongosh >/dev/null 2>&1 && mongo_cmd="mongosh"
+            
+            $mongo_cmd --quiet --eval "db.currentOp({\$or: [{op: {\$in: ['query', 'command']}}, {secs_running: {\$gte: 30}}]}).inprog.forEach(function(op) { print('OpID: ' + op.opid + ' | Duration: ' + op.secs_running + 's | NS: ' + op.ns + ' | Query: ' + JSON.stringify(op.command).substring(0,100)); }); print('---TOP 5 SLOWEST OPERATIONS---'); db.system.profile.find().sort({millis: -1}).limit(5).forEach(function(op) { print('Duration: ' + op.millis + 'ms | Op: ' + op.op + ' | NS: ' + op.ns + ' | Query: ' + JSON.stringify(op.command).substring(0,100)); });" 2>/dev/null | tee -a "$OUTPUT_FILE" || echo "  Unable to query MongoDB (requires authentication or profiling enabled)" | tee -a "$OUTPUT_FILE"
+            
+            # Check for long-running operations
+            local long_running=$($mongo_cmd --quiet --eval "db.currentOp({secs_running: {\$gte: 30}}).inprog.length" 2>/dev/null)
+            if [[ -n "$long_running" ]] && (( long_running > 0 )); then
+                log_bottleneck "Database" "Long-running MongoDB operations detected (>30s)" "Yes" "30s" "High"
+            fi
         fi
     fi
     
@@ -871,6 +888,26 @@ analyze_databases() {
         if (( redis_conns > 10000 )); then
             log_bottleneck "Database" "High Redis connection count" "${redis_conns}" "10000" "Medium"
         fi
+        
+        # Redis Performance Analysis
+        if command -v redis-cli >/dev/null 2>&1; then
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "  Redis Performance Metrics:" | tee -a "$OUTPUT_FILE"
+            
+            local redis_stats=$(redis-cli INFO stats 2>/dev/null)
+            local total_commands=$(echo "$redis_stats" | grep "total_commands_processed:" | cut -d: -f2 | tr -d '\r')
+            local ops_per_sec=$(echo "$redis_stats" | grep "instantaneous_ops_per_sec:" | cut -d: -f2 | tr -d '\r')
+            local rejected_conns=$(echo "$redis_stats" | grep "rejected_connections:" | cut -d: -f2 | tr -d '\r')
+            
+            echo "  Total Commands: ${total_commands} | Ops/sec: ${ops_per_sec} | Rejected Connections: ${rejected_conns}" | tee -a "$OUTPUT_FILE"
+            
+            echo "  Top 5 Slow Commands:" | tee -a "$OUTPUT_FILE"
+            redis-cli SLOWLOG GET 5 2>/dev/null | tee -a "$OUTPUT_FILE" || echo "  Unable to query Redis slowlog" | tee -a "$OUTPUT_FILE"
+            
+            if [[ -n "$rejected_conns" ]] && (( rejected_conns > 0 )); then
+                log_bottleneck "Database" "Redis connection rejections detected" "${rejected_conns}" "0" "High"
+            fi
+        fi
     fi
     
     # Oracle Detection
@@ -888,6 +925,32 @@ analyze_databases() {
         
         if (( oracle_conns > 500 )); then
             log_bottleneck "Database" "High Oracle connection count" "${oracle_conns}" "500" "Medium"
+        fi
+        
+        # Oracle Query Analysis
+        if command -v sqlplus >/dev/null 2>&1; then
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "  Oracle Query Analysis:" | tee -a "$OUTPUT_FILE"
+            
+            sqlplus -S / as sysdba <<EOF 2>/dev/null | tee -a "$OUTPUT_FILE" || echo "  Unable to query Oracle (requires sqlplus and authentication)" | tee -a "$OUTPUT_FILE"
+SET PAGESIZE 50
+SET LINESIZE 200
+SELECT sid, serial#, username, status, ROUND(last_call_et/60, 2) AS duration_min, sql_id, blocking_session, event, wait_time FROM v\$session WHERE status = 'ACTIVE' AND username IS NOT NULL ORDER BY last_call_et DESC FETCH FIRST 5 ROWS ONLY;
+SELECT sql_id, executions, ROUND(elapsed_time/1000000, 2) AS total_time_sec, ROUND(cpu_time/1000000, 2) AS cpu_time_sec, ROUND(buffer_gets/executions, 0) AS avg_buffer_gets, SUBSTR(sql_text, 1, 100) AS sql_text FROM v\$sql ORDER BY elapsed_time DESC FETCH FIRST 5 ROWS ONLY;
+EXIT;
+EOF
+            
+            # Check for long-running sessions
+            local long_running=$(sqlplus -S / as sysdba <<EOF 2>/dev/null | tail -1
+SET PAGESIZE 0
+SET FEEDBACK OFF
+SELECT COUNT(*) FROM v\$session WHERE status = 'ACTIVE' AND username IS NOT NULL AND last_call_et > 1800;
+EXIT;
+EOF
+)
+            if [[ -n "$long_running" ]] && (( long_running > 0 )); then
+                log_bottleneck "Database" "Long-running Oracle sessions detected (>30min)" "Yes" "30min" "High"
+            fi
         fi
     fi
     
@@ -907,6 +970,22 @@ analyze_databases() {
         if (( mssql_conns > 500 )); then
             log_bottleneck "Database" "High SQL Server connection count" "${mssql_conns}" "500" "Medium"
         fi
+        
+        # SQL Server Query Analysis
+        if command -v sqlcmd >/dev/null 2>&1; then
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "  SQL Server Query Analysis:" | tee -a "$OUTPUT_FILE"
+            
+            sqlcmd -S localhost -E -Q "SELECT TOP 5 qs.execution_count AS [Executions], qs.total_worker_time / 1000 AS [Total CPU (ms)], qs.total_worker_time / qs.execution_count / 1000 AS [Avg CPU (ms)], qs.total_elapsed_time / 1000 AS [Total Duration (ms)], SUBSTRING(qt.text, (qs.statement_start_offset/2)+1, ((CASE qs.statement_end_offset WHEN -1 THEN DATALENGTH(qt.text) ELSE qs.statement_end_offset END - qs.statement_start_offset)/2) + 1) AS [Query Text] FROM sys.dm_exec_query_stats qs CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) qt ORDER BY qs.total_worker_time DESC;" -h -1 -W 2>/dev/null | tee -a "$OUTPUT_FILE" || echo "  Unable to query SQL Server DMVs (requires authentication)" | tee -a "$OUTPUT_FILE"
+            
+            sqlcmd -S localhost -E -Q "SELECT r.session_id, r.status, r.command, r.cpu_time, r.total_elapsed_time, r.wait_type, r.wait_time, r.blocking_session_id, SUBSTRING(qt.text, (r.statement_start_offset/2)+1, ((CASE r.statement_end_offset WHEN -1 THEN DATALENGTH(qt.text) ELSE r.statement_end_offset END - r.statement_start_offset)/2) + 1) AS [Current Query] FROM sys.dm_exec_requests r CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) qt WHERE r.session_id > 50 ORDER BY r.total_elapsed_time DESC;" -h -1 -W 2>/dev/null | tee -a "$OUTPUT_FILE"
+            
+            # Check for long-running queries
+            local long_running=$(sqlcmd -S localhost -E -Q "SELECT COUNT(*) FROM sys.dm_exec_requests WHERE total_elapsed_time > 30000;" -h -1 -W 2>/dev/null | tail -1 | tr -d ' ')
+            if [[ -n "$long_running" ]] && (( long_running > 0 )); then
+                log_bottleneck "Database" "Long-running SQL queries detected (>30s)" "Yes" "30s" "High"
+            fi
+        fi
     fi
     
     # Elasticsearch Detection
@@ -922,10 +1001,33 @@ analyze_databases() {
         local es_conns=$(netstat -ant 2>/dev/null | grep :9200 | grep ESTABLISHED | wc -l || echo "0")
         echo "  Active Connections: ${es_conns}" | tee -a "$OUTPUT_FILE"
         
-        # Check data directory size
-        if [[ -d /var/lib/elasticsearch ]]; then
-            local es_size=$(du -sh /var/lib/elasticsearch 2>/dev/null | awk '{print $1}')
-            echo "  Data Directory Size: ${es_size}" | tee -a "$OUTPUT_FILE"
+        # Elasticsearch Query Analysis
+        if command -v curl >/dev/null 2>&1; then
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "  Elasticsearch Performance Analysis:" | tee -a "$OUTPUT_FILE"
+            
+            # Get current tasks
+            local es_tasks=$(curl -s "http://localhost:9200/_tasks?detailed=true&actions=*search*" 2>/dev/null)
+            if [[ -n "$es_tasks" ]]; then
+                echo "  Active Search Tasks:" | tee -a "$OUTPUT_FILE"
+                echo "$es_tasks" | grep -o '"running_time_in_nanos":[0-9]*' | head -5 | tee -a "$OUTPUT_FILE"
+                
+                # Check for long-running queries
+                local long_running=$(echo "$es_tasks" | grep -o '"running_time_in_nanos":[0-9]*' | awk -F: '{if ($2 > 30000000000) print $2}' | wc -l)
+                if (( long_running > 0 )); then
+                    log_bottleneck "Database" "Long-running Elasticsearch queries detected (>30s)" "Yes" "30s" "High"
+                fi
+            fi
+            
+            # Get thread pool stats
+            echo "  Thread Pool Status:" | tee -a "$OUTPUT_FILE"
+            curl -s "http://localhost:9200/_cat/thread_pool?v&h=node_name,name,active,queue,rejected" 2>/dev/null | tee -a "$OUTPUT_FILE" || echo "  Unable to query Elasticsearch API (requires HTTP access to localhost:9200)" | tee -a "$OUTPUT_FILE"
+            
+            # Check for rejections
+            local rejections=$(curl -s "http://localhost:9200/_cat/thread_pool?h=rejected" 2>/dev/null | awk '{sum+=$1} END {print sum}')
+            if [[ -n "$rejections" ]] && (( rejections > 0 )); then
+                log_bottleneck "Database" "Elasticsearch thread pool rejections detected" "${rejections}" "0" "High"
+            fi
         fi
     fi
     
