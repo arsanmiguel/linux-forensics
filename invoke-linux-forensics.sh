@@ -63,7 +63,9 @@ NC='\033[0m' # No Color
 #############################################################################
 
 detect_os() {
-    if [[ -f /etc/os-release ]]; then
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        DISTRO="macos"
+    elif [[ -f /etc/os-release ]]; then
         . /etc/os-release
         DISTRO="$ID"
     elif [[ -f /etc/redhat-release ]]; then
@@ -80,6 +82,9 @@ detect_os() {
     
     # Determine package manager
     case "$DISTRO" in
+        macos)
+            PACKAGE_MANAGER="brew"
+            ;;
         ubuntu|debian)
             PACKAGE_MANAGER="apt-get"
             ;;
@@ -698,6 +703,29 @@ analyze_disk() {
         fi
     else
         log_warning "iostat not available - skipping detailed I/O statistics"
+    fi
+    
+    # Check for processes in uninterruptible sleep (I/O wait)
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "Processes in I/O Wait (D state):" | tee -a "$OUTPUT_FILE"
+    local io_wait_procs=$(ps aux | awk '$8 ~ /D/' | wc -l)
+    if (( io_wait_procs > 0 )); then
+        ps aux | awk 'NR==1 || $8 ~ /D/' | head -20 | tee -a "$OUTPUT_FILE"
+        if (( io_wait_procs > 5 )); then
+            log_bottleneck "Disk" "High I/O wait - processes stuck in uninterruptible sleep" "${io_wait_procs}" "5" "High"
+        fi
+    else
+        echo "  No processes in I/O wait" | tee -a "$OUTPUT_FILE"
+    fi
+    
+    # Top I/O consumers using iotop if available
+    if command -v iotop >/dev/null 2>&1; then
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Top I/O Consumers (iotop):" | tee -a "$OUTPUT_FILE"
+        timeout 5 iotop -b -n 2 -o 2>/dev/null | tail -20 | tee -a "$OUTPUT_FILE" || echo "  Unable to run iotop" | tee -a "$OUTPUT_FILE"
+    else
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "iotop not available - install with package manager for per-process I/O analysis" | tee -a "$OUTPUT_FILE"
     fi
     
     # Disk I/O test (if in disk mode or deep mode)
