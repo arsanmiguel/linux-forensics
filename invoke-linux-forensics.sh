@@ -105,18 +105,6 @@ detect_os() {
     esac
 }
 
-check_internet_connectivity() {
-    local test_hosts=("8.8.8.8" "1.1.1.1" "169.254.169.254")
-    
-    for host in "${test_hosts[@]}"; do
-        if ping -c 1 -W 2 "$host" >/dev/null 2>&1; then
-            return 0
-        fi
-    done
-    
-    return 1
-}
-
 diagnose_package_install_failure() {
     local package="$1"
     
@@ -126,29 +114,7 @@ diagnose_package_install_failure() {
     echo "DIAGNOSTIC INFORMATION:" | tee -a "$OUTPUT_FILE"
     echo "======================" | tee -a "$OUTPUT_FILE"
     
-    # Check internet connectivity
-    if ! check_internet_connectivity; then
-        echo "❌ No internet connectivity detected" | tee -a "$OUTPUT_FILE"
-        echo "" | tee -a "$OUTPUT_FILE"
-        echo "Possible causes:" | tee -a "$OUTPUT_FILE"
-        echo "  1. Network interface is down" | tee -a "$OUTPUT_FILE"
-        echo "  2. No default gateway configured" | tee -a "$OUTPUT_FILE"
-        echo "  3. DNS resolution not working" | tee -a "$OUTPUT_FILE"
-        echo "  4. Firewall blocking outbound connections" | tee -a "$OUTPUT_FILE"
-        echo "  5. Proxy configuration required" | tee -a "$OUTPUT_FILE"
-        echo "" | tee -a "$OUTPUT_FILE"
-        echo "Troubleshooting steps:" | tee -a "$OUTPUT_FILE"
-        echo "  - Check network interface: ip addr show" | tee -a "$OUTPUT_FILE"
-        echo "  - Check routing: ip route show" | tee -a "$OUTPUT_FILE"
-        echo "  - Check DNS: cat /etc/resolv.conf" | tee -a "$OUTPUT_FILE"
-        echo "  - Test connectivity: ping 8.8.8.8" | tee -a "$OUTPUT_FILE"
-        echo "  - Check proxy settings: echo \$http_proxy" | tee -a "$OUTPUT_FILE"
-    else
-        echo "✓ Internet connectivity OK" | tee -a "$OUTPUT_FILE"
-    fi
-    
     # Check repository configuration
-    echo "" | tee -a "$OUTPUT_FILE"
     case "$PACKAGE_MANAGER" in
         apt-get)
             echo "Repository configuration:" | tee -a "$OUTPUT_FILE"
@@ -174,7 +140,7 @@ diagnose_package_install_failure() {
     
     # Check disk space
     echo "" | tee -a "$OUTPUT_FILE"
-    local root_usage=$(df -h / | tail -1 | awk '{print $5}' | sed 's/%//')
+    local root_usage=$(df -h / 2>/dev/null | tail -1 | awk '{print $5}' | sed 's/%//')
     echo "Disk space on /: ${root_usage}% used" | tee -a "$OUTPUT_FILE"
     if (( root_usage > 90 )); then
         echo "  ⚠️  WARNING: Low disk space may prevent package installation" | tee -a "$OUTPUT_FILE"
@@ -546,56 +512,128 @@ analyze_memory() {
     log_info "Analyzing memory usage..."
     
     # Memory statistics
-    local total_mem=$(free -m | grep Mem | awk '{print $2}')
-    local used_mem=$(free -m | grep Mem | awk '{print $3}')
-    local free_mem=$(free -m | grep Mem | awk '{print $4}')
-    local available_mem=$(free -m | grep Mem | awk '{print $7}')
-    local mem_usage_pct=$(echo "scale=2; ($used_mem / $total_mem) * 100" | bc)
-    local mem_available_pct=$(echo "scale=2; ($available_mem / $total_mem) * 100" | bc)
+    local total_mem=$(free -m 2>/dev/null | grep Mem | awk '{print $2}')
+    local used_mem=$(free -m 2>/dev/null | grep Mem | awk '{print $3}')
+    local free_mem=$(free -m 2>/dev/null | grep Mem | awk '{print $4}')
+    local available_mem=$(free -m 2>/dev/null | grep Mem | awk '{print $7}')
+    
+    if [[ -z "$total_mem" ]]; then
+        log_warning "Unable to get memory statistics"
+        return
+    fi
+    
+    if command -v bc >/dev/null 2>&1; then
+        local mem_usage_pct=$(echo "scale=2; ($used_mem / $total_mem) * 100" | bc)
+        local mem_available_pct=$(echo "scale=2; ($available_mem / $total_mem) * 100" | bc)
+    else
+        local mem_usage_pct=$(awk "BEGIN {printf \"%.2f\", ($used_mem / $total_mem) * 100}")
+        local mem_available_pct=$(awk "BEGIN {printf \"%.2f\", ($available_mem / $total_mem) * 100}")
+    fi
     
     echo "Total Memory: ${total_mem} MB" | tee -a "$OUTPUT_FILE"
     echo "Used Memory: ${used_mem} MB (${mem_usage_pct}%)" | tee -a "$OUTPUT_FILE"
     echo "Available Memory: ${available_mem} MB (${mem_available_pct}%)" | tee -a "$OUTPUT_FILE"
     
-    if (( $(echo "$mem_available_pct < 10" | bc -l) )); then
-        log_bottleneck "Memory" "Low available memory" "${mem_available_pct}%" "10%" "Critical"
+    if command -v bc >/dev/null 2>&1; then
+        if (( $(echo "$mem_available_pct < 10" | bc -l) )); then
+            log_bottleneck "Memory" "Low available memory" "${mem_available_pct}%" "10%" "Critical"
+        fi
+    else
+        if (( $(awk "BEGIN {print ($mem_available_pct < 10)}") )); then
+            log_bottleneck "Memory" "Low available memory" "${mem_available_pct}%" "10%" "Critical"
+        fi
     fi
     
     # Swap usage
-    local total_swap=$(free -m | grep Swap | awk '{print $2}')
-    if (( total_swap > 0 )); then
-        local used_swap=$(free -m | grep Swap | awk '{print $3}')
-        local swap_usage_pct=$(echo "scale=2; ($used_swap / $total_swap) * 100" | bc)
+    local total_swap=$(free -m 2>/dev/null | grep Swap | awk '{print $2}')
+    if [[ -n "$total_swap" ]] && (( total_swap > 0 )); then
+        local used_swap=$(free -m 2>/dev/null | grep Swap | awk '{print $3}')
+        if command -v bc >/dev/null 2>&1; then
+            local swap_usage_pct=$(echo "scale=2; ($used_swap / $total_swap) * 100" | bc)
+        else
+            local swap_usage_pct=$(awk "BEGIN {printf \"%.2f\", ($used_swap / $total_swap) * 100}")
+        fi
         echo "Swap Usage: ${used_swap} MB / ${total_swap} MB (${swap_usage_pct}%)" | tee -a "$OUTPUT_FILE"
         
-        if (( $(echo "$swap_usage_pct > 50" | bc -l) )); then
-            log_bottleneck "Memory" "High swap usage" "${swap_usage_pct}%" "50%" "High"
+        if command -v bc >/dev/null 2>&1; then
+            if (( $(echo "$swap_usage_pct > 50" | bc -l) )); then
+                log_bottleneck "Memory" "High swap usage" "${swap_usage_pct}%" "50%" "High"
+            fi
+        else
+            if (( $(awk "BEGIN {print ($swap_usage_pct > 50)}") )); then
+                log_bottleneck "Memory" "High swap usage" "${swap_usage_pct}%" "50%" "High"
+            fi
         fi
     else
         echo "Swap: Not configured" | tee -a "$OUTPUT_FILE"
     fi
     
     # Page faults
-    log_info "Sampling page faults (5 seconds)..."
-    local page_faults=$(vmstat 1 5 | tail -1 | awk '{print $7}')
-    echo "Page Faults: ${page_faults}/sec" | tee -a "$OUTPUT_FILE"
+    if command -v vmstat >/dev/null 2>&1; then
+        log_info "Sampling page faults (5 seconds)..."
+        local page_faults=$(vmstat 1 5 2>/dev/null | tail -1 | awk '{print $7}')
+        if [[ -n "$page_faults" ]]; then
+            echo "Page Faults: ${page_faults}/sec" | tee -a "$OUTPUT_FILE"
+            
+            if (( page_faults > 1000 )); then
+                log_bottleneck "Memory" "High page fault rate" "${page_faults}/sec" "1000/sec" "Medium"
+            fi
+        fi
+    fi
     
-    if (( page_faults > 1000 )); then
-        log_bottleneck "Memory" "High page fault rate" "${page_faults}/sec" "1000/sec" "Medium"
+    # Memory pressure indicators
+    if [[ -f /proc/pressure/memory ]]; then
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Memory Pressure (PSI):" | tee -a "$OUTPUT_FILE"
+        cat /proc/pressure/memory | tee -a "$OUTPUT_FILE"
+    fi
+    
+    # Slab memory usage
+    if [[ -f /proc/meminfo ]]; then
+        local slab_mem=$(grep "^Slab:" /proc/meminfo | awk '{print $2}')
+        local slab_reclaimable=$(grep "^SReclaimable:" /proc/meminfo | awk '{print $2}')
+        local slab_unreclaimable=$(grep "^SUnreclaim:" /proc/meminfo | awk '{print $2}')
+        
+        if [[ -n "$slab_mem" ]]; then
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "Slab Memory: $((slab_mem / 1024)) MB" | tee -a "$OUTPUT_FILE"
+            echo "  Reclaimable: $((slab_reclaimable / 1024)) MB" | tee -a "$OUTPUT_FILE"
+            echo "  Unreclaimable: $((slab_unreclaimable / 1024)) MB" | tee -a "$OUTPUT_FILE"
+        fi
     fi
     
     # OOM killer check
-    if dmesg | grep -i "out of memory" | tail -5 | grep -q .; then
-        echo "" | tee -a "$OUTPUT_FILE"
-        echo "Recent OOM (Out of Memory) events detected:" | tee -a "$OUTPUT_FILE"
-        dmesg | grep -i "out of memory" | tail -5 | tee -a "$OUTPUT_FILE"
-        log_bottleneck "Memory" "OOM killer invoked recently" "Yes" "No" "Critical"
+    if command -v dmesg >/dev/null 2>&1; then
+        if dmesg 2>/dev/null | grep -i "out of memory" | tail -5 | grep -q .; then
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "Recent OOM (Out of Memory) events detected:" | tee -a "$OUTPUT_FILE"
+            dmesg 2>/dev/null | grep -i "out of memory" | tail -5 | tee -a "$OUTPUT_FILE"
+            log_bottleneck "Memory" "OOM killer invoked recently" "Yes" "No" "Critical"
+        fi
     fi
+    
+    # Check for memory leaks - processes with high VSZ but low RSS
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "Potential memory leak candidates (high virtual, low resident):" | tee -a "$OUTPUT_FILE"
+    ps aux 2>/dev/null | awk '$5 > 2097152 && $6 < ($5 * 0.3) {printf "  %-20s PID: %-8s VSZ: %8d KB RSS: %8d KB\n", $11, $2, $5, $6}' | head -5 | tee -a "$OUTPUT_FILE" || \
+    echo "  No significant candidates found" | tee -a "$OUTPUT_FILE"
     
     # Top memory consumers
     echo "" | tee -a "$OUTPUT_FILE"
     echo "Top 10 memory-consuming processes:" | tee -a "$OUTPUT_FILE"
-    ps aux --sort=-%mem | head -11 | tail -10 | awk '{printf "  %-20s PID: %-8s MEM: %5s%% CPU: %5s%%\n", $11, $2, $4, $3}' | tee -a "$OUTPUT_FILE"
+    ps aux --sort=-%mem 2>/dev/null | head -11 | tail -10 | awk '{printf "  %-20s PID: %-8s MEM: %5s%% CPU: %5s%%\n", $11, $2, $4, $3}' | tee -a "$OUTPUT_FILE" || \
+    ps -eo comm,pid,pmem,pcpu --sort=-pmem 2>/dev/null | head -11 | tail -10 | tee -a "$OUTPUT_FILE" || \
+    log_warning "Unable to list top memory consumers"
+    
+    # Huge pages status
+    if [[ -f /proc/meminfo ]]; then
+        local hugepages_total=$(grep "^HugePages_Total:" /proc/meminfo | awk '{print $2}')
+        local hugepages_free=$(grep "^HugePages_Free:" /proc/meminfo | awk '{print $2}')
+        if [[ -n "$hugepages_total" ]] && (( hugepages_total > 0 )); then
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "Huge Pages: ${hugepages_free} free / ${hugepages_total} total" | tee -a "$OUTPUT_FILE"
+        fi
+    fi
     
     log_success "Memory forensics completed"
 }
@@ -705,19 +743,50 @@ analyze_network() {
     
     log_info "Analyzing network performance..."
     
-    # Network interfaces
+    # Network interfaces and status
     echo "Network Interfaces:" | tee -a "$OUTPUT_FILE"
-    ip -br addr | tee -a "$OUTPUT_FILE"
+    if command -v ip >/dev/null 2>&1; then
+        ip -br addr 2>/dev/null | tee -a "$OUTPUT_FILE"
+    else
+        ifconfig 2>/dev/null | grep -E "^[a-z]|inet " | tee -a "$OUTPUT_FILE" || \
+        log_warning "Unable to list network interfaces"
+    fi
     
-    # Network statistics
-    if check_command netstat; then
+    # Network statistics and connection states
+    if command -v netstat >/dev/null 2>&1; then
         echo "" | tee -a "$OUTPUT_FILE"
         echo "TCP Connection States:" | tee -a "$OUTPUT_FILE"
-        netstat -ant | awk '{print $6}' | sort | uniq -c | sort -rn | tee -a "$OUTPUT_FILE"
+        netstat -ant 2>/dev/null | awk '{print $6}' | sort | uniq -c | sort -rn | tee -a "$OUTPUT_FILE"
         
         # Check for excessive connections
-        local established=$(netstat -ant | grep ESTABLISHED | wc -l)
-        local time_wait=$(netstat -ant | grep TIME_WAIT | wc -l)
+        local established=$(netstat -ant 2>/dev/null | grep -c ESTABLISHED || echo "0")
+        local time_wait=$(netstat -ant 2>/dev/null | grep -c TIME_WAIT || echo "0")
+        local close_wait=$(netstat -ant 2>/dev/null | grep -c CLOSE_WAIT || echo "0")
+        
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Established Connections: ${established}" | tee -a "$OUTPUT_FILE"
+        echo "TIME_WAIT Connections: ${time_wait}" | tee -a "$OUTPUT_FILE"
+        echo "CLOSE_WAIT Connections: ${close_wait}" | tee -a "$OUTPUT_FILE"
+        
+        if (( time_wait > 5000 )); then
+            log_bottleneck "Network" "Excessive TIME_WAIT connections" "${time_wait}" "5000" "Medium"
+        fi
+        
+        if (( close_wait > 1000 )); then
+            log_bottleneck "Network" "Excessive CLOSE_WAIT connections" "${close_wait}" "1000" "Medium"
+        fi
+        
+        # Listening ports
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Top 10 listening ports:" | tee -a "$OUTPUT_FILE"
+        netstat -tuln 2>/dev/null | grep LISTEN | awk '{print $4}' | sed 's/.*://' | sort -n | uniq -c | sort -rn | head -10 | tee -a "$OUTPUT_FILE"
+    elif command -v ss >/dev/null 2>&1; then
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "TCP Connection States:" | tee -a "$OUTPUT_FILE"
+        ss -ant 2>/dev/null | awk '{print $1}' | sort | uniq -c | sort -rn | tee -a "$OUTPUT_FILE"
+        
+        local established=$(ss -ant 2>/dev/null | grep -c ESTAB || echo "0")
+        local time_wait=$(ss -ant 2>/dev/null | grep -c TIME-WAIT || echo "0")
         
         echo "" | tee -a "$OUTPUT_FILE"
         echo "Established Connections: ${established}" | tee -a "$OUTPUT_FILE"
@@ -726,20 +795,78 @@ analyze_network() {
         if (( time_wait > 5000 )); then
             log_bottleneck "Network" "Excessive TIME_WAIT connections" "${time_wait}" "5000" "Medium"
         fi
+    else
+        log_warning "netstat and ss not available - skipping connection state analysis"
     fi
     
-    # TCP retransmissions
-    if check_command ss; then
-        local retrans=$(ss -ti | grep -oP 'retrans:\d+/\d+' | cut -d: -f2 | cut -d/ -f1 | awk '{sum+=$1} END {print sum}')
-        if [[ -n "$retrans" ]] && (( retrans > 100 )); then
-            log_bottleneck "Network" "High TCP retransmissions detected" "${retrans}" "100" "Medium"
+    # TCP retransmissions and errors
+    if command -v ss >/dev/null 2>&1; then
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "TCP Retransmission Analysis:" | tee -a "$OUTPUT_FILE"
+        local retrans_info=$(ss -ti 2>/dev/null | grep -oP 'retrans:\d+/\d+' | head -20)
+        if [[ -n "$retrans_info" ]]; then
+            echo "$retrans_info" | tee -a "$OUTPUT_FILE"
+            local total_retrans=$(echo "$retrans_info" | cut -d: -f2 | cut -d/ -f1 | awk '{sum+=$1} END {print sum}')
+            if [[ -n "$total_retrans" ]] && (( total_retrans > 100 )); then
+                log_bottleneck "Network" "High TCP retransmissions detected" "${total_retrans}" "100" "Medium"
+            fi
+        else
+            echo "  No significant retransmissions detected" | tee -a "$OUTPUT_FILE"
         fi
     fi
     
-    # Network errors
+    # Network interface statistics and errors
     echo "" | tee -a "$OUTPUT_FILE"
-    echo "Network Interface Errors:" | tee -a "$OUTPUT_FILE"
-    ip -s link | grep -E "^\d+:|RX:|TX:" | tee -a "$OUTPUT_FILE"
+    echo "Network Interface Statistics:" | tee -a "$OUTPUT_FILE"
+    if command -v ip >/dev/null 2>&1; then
+        ip -s link 2>/dev/null | grep -E "^\d+:|RX:|TX:|errors" | tee -a "$OUTPUT_FILE"
+        
+        # Check for errors
+        local rx_errors=$(ip -s link 2>/dev/null | grep "RX:" -A 1 | grep errors | awk '{sum+=$2} END {print sum}')
+        local tx_errors=$(ip -s link 2>/dev/null | grep "TX:" -A 1 | grep errors | awk '{sum+=$2} END {print sum}')
+        
+        if [[ -n "$rx_errors" ]] && (( rx_errors > 100 )); then
+            log_bottleneck "Network" "High RX errors detected" "${rx_errors}" "100" "Medium"
+        fi
+        
+        if [[ -n "$tx_errors" ]] && (( tx_errors > 100 )); then
+            log_bottleneck "Network" "High TX errors detected" "${tx_errors}" "100" "Medium"
+        fi
+    else
+        netstat -i 2>/dev/null | tee -a "$OUTPUT_FILE" || \
+        ifconfig 2>/dev/null | grep -E "RX|TX" | tee -a "$OUTPUT_FILE" || \
+        log_warning "Unable to get network interface statistics"
+    fi
+    
+    # Network throughput (if sar available)
+    if command -v sar >/dev/null 2>&1; then
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Network Throughput (last 5 samples):" | tee -a "$OUTPUT_FILE"
+        sar -n DEV 1 5 2>/dev/null | grep -v "^$" | grep -v "Linux" | tail -20 | tee -a "$OUTPUT_FILE" || \
+        log_warning "sar network statistics not available"
+    fi
+    
+    # Socket statistics
+    if command -v ss >/dev/null 2>&1; then
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Socket Memory Usage:" | tee -a "$OUTPUT_FILE"
+        ss -m 2>/dev/null | grep -A 1 "skmem:" | head -20 | tee -a "$OUTPUT_FILE"
+    fi
+    
+    # Check for dropped packets
+    if [[ -f /proc/net/dev ]]; then
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Dropped Packets by Interface:" | tee -a "$OUTPUT_FILE"
+        awk 'NR>2 {print $1, "RX dropped:", $5, "TX dropped:", $13}' /proc/net/dev | column -t | tee -a "$OUTPUT_FILE"
+    fi
+    
+    # Network buffer/queue statistics
+    if [[ -f /proc/sys/net/core/netdev_max_backlog ]]; then
+        local max_backlog=$(cat /proc/sys/net/core/netdev_max_backlog)
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Network Queue Settings:" | tee -a "$OUTPUT_FILE"
+        echo "  Max backlog: ${max_backlog}" | tee -a "$OUTPUT_FILE"
+    fi
     
     log_success "Network forensics completed"
 }
