@@ -2,21 +2,45 @@
 
 ## Overview
 
-A comprehensive Bash-based diagnostic tool for Linux servers that automatically detects performance bottlenecks and can create AWS Support cases with detailed forensic data. Originally created for AWS DMS migrations, now useful for any Linux performance troubleshooting scenario. Uses only open-source utilities and automatically installs missing dependencies when possible.
+A comprehensive Bash-based diagnostic tool for Linux servers that automatically detects performance bottlenecks and can create AWS Support cases with detailed forensic data. **Originally created for AWS DMS migrations - run this on your SOURCE DATABASE SERVER, ya filthy animal!** Now useful for any Linux performance troubleshooting scenario. Uses only open-source utilities and automatically installs missing dependencies when possible.
 
 **Key Features:**
 - ✅ Comprehensive performance forensics (CPU, Memory, Disk, Network, Database)
-- ✅ **AWS DMS migration diagnostics** (replication instance detection, CloudWatch Logs Agent, database connectivity)
+- ✅ **AWS DMS SOURCE DATABASE diagnostics** (binary logging, replication lag, CloudWatch agent, connection analysis)
 - ✅ Automated bottleneck detection
 - ✅ **Automatic dependency installation** (Debian/Ubuntu, RHEL/CentOS/Amazon Linux)
 - ✅ Multi-distro support with intelligent fallbacks
 - ✅ CPU forensics (load average, context switches, steal time, thread analysis)
 - ✅ Memory forensics (OOM detection, swap analysis, page faults, slab memory, leak detection)
 - ✅ Disk I/O testing (usage, wait times, read/write performance, iotop support, D state detection)
-- ✅ **Database forensics** - DBA-level query analysis capabilities
-- ✅ Network analysis (connection states, retransmissions, errors, dropped packets, DMS connectivity)
+- ✅ **Database forensics** - DBA-level query analysis + DMS readiness checks
+- ✅ Network analysis (connection states, retransmissions, errors, database connectivity)
 - ✅ **Automatic AWS Support case creation** with diagnostic data
 - ✅ Graceful degradation when tools unavailable
+
+---
+
+## 🎯 **AWS DMS Migrations - READ THIS!**
+
+**This tool is designed to run on your SOURCE DATABASE SERVER**, not on the DMS replication instance (which is AWS-managed).
+
+**What it checks for DMS:**
+- ✅ MySQL binary logging enabled (required for CDC)
+- ✅ MySQL binlog format set to ROW (required for DMS)
+- ✅ Binary log retention configured
+- ✅ Replication lag (if source is a replica)
+- ✅ CloudWatch Logs Agent running
+- ✅ Database connection health
+- ✅ Network connectivity to database ports
+- ✅ Connection churn that could impact DMS
+- ✅ Source database performance issues
+
+**Run this when:**
+- Planning a DMS migration (pre-migration assessment)
+- DMS replication is slow or stalling
+- Source database performance issues
+- High replication lag
+- Connection errors in DMS logs
 
 ---
 

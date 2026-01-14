@@ -773,35 +773,17 @@ analyze_databases() {
     
     local databases_found=false
     
-    # Check for DMS replication instance
-    if pgrep -f "dms-rep" >/dev/null 2>&1 || pgrep -f "aws-dms" >/dev/null 2>&1; then
-        databases_found=true
+    # Check for CloudWatch Logs Agent (common in DMS migrations)
+    if pgrep -f "amazon-cloudwatch-agent" >/dev/null 2>&1 || pgrep -f "awslogs" >/dev/null 2>&1; then
         echo "" | tee -a "$OUTPUT_FILE"
-        echo "=== AWS DMS Replication Instance Detected ===" | tee -a "$OUTPUT_FILE"
-        
-        # DMS process info
-        ps aux | grep -E "[d]ms-rep|[a]ws-dms" | awk '{printf "  Process: PID %s, CPU: %s%%, MEM: %s%%\n", $2, $3, $4}' | tee -a "$OUTPUT_FILE"
-        
-        # Check DMS logs
-        if [[ -d /var/log/dms ]]; then
-            echo "  DMS Logs Directory: /var/log/dms" | tee -a "$OUTPUT_FILE"
-            local recent_errors=$(find /var/log/dms -name "*.log" -mtime -1 -exec grep -i "error\|failed\|exception" {} \; 2>/dev/null | wc -l)
-            echo "  Recent Errors (last 24h): ${recent_errors}" | tee -a "$OUTPUT_FILE"
-            
-            if (( recent_errors > 100 )); then
-                log_bottleneck "DMS" "High error count in DMS logs" "${recent_errors}" "100" "High"
-            fi
-        fi
-        
-        # Check CloudWatch Logs Agent
-        if pgrep -f "amazon-cloudwatch-agent" >/dev/null 2>&1; then
-            echo "  CloudWatch Logs Agent: Running" | tee -a "$OUTPUT_FILE"
-        else
-            echo "  CloudWatch Logs Agent: Not detected" | tee -a "$OUTPUT_FILE"
-            log_bottleneck "DMS" "CloudWatch Logs Agent not running" "No" "Yes" "Medium"
-        fi
-        
+        echo "=== CloudWatch Logs Agent Detected ===" | tee -a "$OUTPUT_FILE"
+        ps aux | grep -E "[a]mazon-cloudwatch-agent|[a]wslogs" | awk '{printf "  Process: PID %s, CPU: %s%%, MEM: %s%%\n", $2, $3, $4}' | tee -a "$OUTPUT_FILE"
+        echo "  Status: Running" | tee -a "$OUTPUT_FILE"
+    else
         echo "" | tee -a "$OUTPUT_FILE"
+        echo "=== CloudWatch Logs Agent ===" | tee -a "$OUTPUT_FILE"
+        echo "  Status: Not detected" | tee -a "$OUTPUT_FILE"
+        echo "  Note: CloudWatch Logs Agent recommended for DMS migrations" | tee -a "$OUTPUT_FILE"
     fi
     
     # MySQL/MariaDB Detection
@@ -834,6 +816,40 @@ analyze_databases() {
             local long_running=$(mysql -u root -N -e "SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE COMMAND != 'Sleep' AND TIME > 30;" 2>/dev/null)
             if [[ -n "$long_running" ]] && (( long_running > 0 )); then
                 log_bottleneck "Database" "Long-running MySQL queries detected (>30s)" "Yes" "30s" "High"
+            fi
+            
+            # DMS-specific checks for MySQL
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "  DMS Migration Readiness:" | tee -a "$OUTPUT_FILE"
+            
+            # Check binary logging (required for CDC)
+            local binlog_status=$(mysql -u root -N -e "SHOW VARIABLES LIKE 'log_bin';" 2>/dev/null | awk '{print $2}')
+            echo "    Binary Logging: ${binlog_status:-Unknown}" | tee -a "$OUTPUT_FILE"
+            if [[ "$binlog_status" != "ON" ]]; then
+                log_bottleneck "DMS" "MySQL binary logging disabled - required for CDC" "OFF" "ON" "High"
+            fi
+            
+            # Check binlog format (ROW required for DMS)
+            local binlog_format=$(mysql -u root -N -e "SHOW VARIABLES LIKE 'binlog_format';" 2>/dev/null | awk '{print $2}')
+            echo "    Binary Log Format: ${binlog_format:-Unknown}" | tee -a "$OUTPUT_FILE"
+            if [[ "$binlog_format" != "ROW" ]]; then
+                log_bottleneck "DMS" "MySQL binlog format not ROW - required for DMS CDC" "${binlog_format}" "ROW" "High"
+            fi
+            
+            # Check binlog retention
+            local binlog_retention=$(mysql -u root -N -e "SHOW VARIABLES LIKE 'expire_logs_days';" 2>/dev/null | awk '{print $2}')
+            echo "    Binary Log Retention: ${binlog_retention:-0} days" | tee -a "$OUTPUT_FILE"
+            if [[ -n "$binlog_retention" ]] && (( $(echo "$binlog_retention < 1" | bc -l 2>/dev/null || echo 1) )); then
+                log_bottleneck "DMS" "MySQL binlog retention too low for DMS" "${binlog_retention}d" ">=1d" "Medium"
+            fi
+            
+            # Check for replication lag (if slave)
+            local slave_status=$(mysql -u root -e "SHOW SLAVE STATUS\G" 2>/dev/null | grep "Seconds_Behind_Master" | awk '{print $2}')
+            if [[ -n "$slave_status" ]] && [[ "$slave_status" != "NULL" ]]; then
+                echo "    Replication Lag: ${slave_status} seconds" | tee -a "$OUTPUT_FILE"
+                if (( slave_status > 300 )); then
+                    log_bottleneck "Database" "High MySQL replication lag" "${slave_status}s" "300s" "High"
+                fi
             fi
         fi
     fi
@@ -1238,26 +1254,29 @@ analyze_network() {
         echo "  Max backlog: ${max_backlog}" | tee -a "$OUTPUT_FILE"
     fi
     
-    # DMS-specific network checks
-    if pgrep -f "dms-rep" >/dev/null 2>&1 || pgrep -f "aws-dms" >/dev/null 2>&1; then
-        echo "" | tee -a "$OUTPUT_FILE"
-        echo "DMS Network Connectivity:" | tee -a "$OUTPUT_FILE"
-        
-        # Check for DMS-related connections
-        local dms_conns=$(netstat -ant 2>/dev/null | grep -E ":3306|:5432|:1521|:1433|:27017" | grep ESTABLISHED | wc -l || echo "0")
-        echo "  Active Database Connections: ${dms_conns}" | tee -a "$OUTPUT_FILE"
-        
-        if (( dms_conns == 0 )); then
-            log_bottleneck "DMS" "No active database connections detected" "0" ">0" "High"
-        fi
-        
-        # Check for connection churn (high TIME_WAIT on database ports)
-        local db_time_wait=$(netstat -ant 2>/dev/null | grep -E ":3306|:5432|:1521|:1433|:27017" | grep TIME_WAIT | wc -l || echo "0")
-        echo "  Database TIME_WAIT Connections: ${db_time_wait}" | tee -a "$OUTPUT_FILE"
-        
-        if (( db_time_wait > 1000 )); then
-            log_bottleneck "DMS" "High connection churn on database ports" "${db_time_wait}" "1000" "Medium"
-        fi
+    # Database connectivity checks (useful for DMS migrations)
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "Database Port Connectivity:" | tee -a "$OUTPUT_FILE"
+    
+    # Check for active database connections
+    local mysql_conns=$(netstat -ant 2>/dev/null | grep ":3306" | grep ESTABLISHED | wc -l || echo "0")
+    local pg_conns=$(netstat -ant 2>/dev/null | grep ":5432" | grep ESTABLISHED | wc -l || echo "0")
+    local oracle_conns=$(netstat -ant 2>/dev/null | grep ":1521" | grep ESTABLISHED | wc -l || echo "0")
+    local mssql_conns=$(netstat -ant 2>/dev/null | grep ":1433" | grep ESTABLISHED | wc -l || echo "0")
+    local mongo_conns=$(netstat -ant 2>/dev/null | grep ":27017" | grep ESTABLISHED | wc -l || echo "0")
+    
+    echo "  MySQL (3306): ${mysql_conns} connections" | tee -a "$OUTPUT_FILE"
+    echo "  PostgreSQL (5432): ${pg_conns} connections" | tee -a "$OUTPUT_FILE"
+    echo "  Oracle (1521): ${oracle_conns} connections" | tee -a "$OUTPUT_FILE"
+    echo "  SQL Server (1433): ${mssql_conns} connections" | tee -a "$OUTPUT_FILE"
+    echo "  MongoDB (27017): ${mongo_conns} connections" | tee -a "$OUTPUT_FILE"
+    
+    # Check for connection churn (high TIME_WAIT on database ports)
+    local db_time_wait=$(netstat -ant 2>/dev/null | grep -E ":3306|:5432|:1521|:1433|:27017" | grep TIME_WAIT | wc -l || echo "0")
+    echo "  Database TIME_WAIT: ${db_time_wait}" | tee -a "$OUTPUT_FILE"
+    
+    if (( db_time_wait > 1000 )); then
+        log_bottleneck "Network" "High connection churn on database ports (DMS impact)" "${db_time_wait}" "1000" "Medium"
     fi
     
     log_success "Network forensics completed"
