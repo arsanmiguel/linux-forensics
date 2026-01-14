@@ -2,7 +2,7 @@
 
 ## Overview
 
-A comprehensive Bash-based diagnostic tool for Linux servers that automatically detects performance bottlenecks and can create AWS Support cases with detailed forensic data. **Originally created for AWS DMS migrations - run this on your SOURCE DATABASE SERVER, ya filthy animal!** Now useful for any Linux performance troubleshooting scenario. Uses only open-source utilities and automatically installs missing dependencies when possible.
+A comprehensive Bash-based diagnostic tool for Linux servers that automatically detects performance bottlenecks and can create AWS Support cases with detailed forensic data. **Originally created for AWS DMS migrations - run this on your SOURCE DATABASE SERVER.** Now useful for any Linux performance troubleshooting scenario. Uses only open-source utilities and automatically installs missing dependencies when possible.
 
 **Key Features:**
 - ✅ Comprehensive performance forensics (CPU, Memory, Disk, Network, Database)
