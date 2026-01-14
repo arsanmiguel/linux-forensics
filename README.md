@@ -12,13 +12,7 @@ A comprehensive Bash-based diagnostic tool for Linux servers that automatically 
 - ✅ CPU forensics (load average, context switches, steal time, thread analysis)
 - ✅ Memory forensics (OOM detection, swap analysis, page faults, slab memory, leak detection)
 - ✅ Disk I/O testing (usage, wait times, read/write performance)
-- ✅ **Database forensics** (MySQL, PostgreSQL, MongoDB, Cassandra, Redis, Oracle, SQL Server, Elasticsearch)
-  - **DBA-level query analysis**: Top 5 queries by CPU/time, long-running queries (>30s), blocking detection
-  - **SQL Server/MySQL/PostgreSQL**: DMV/performance schema queries, active sessions, wait states
-  - **MongoDB**: currentOp() and profiler analysis for slow operations
-  - **Redis**: SLOWLOG, ops/sec metrics, connection rejection tracking
-  - **Oracle**: v$session and v$sql analysis, blocking session detection
-  - **Elasticsearch**: Tasks API for long-running searches, thread pool monitoring
+- ✅ **Database forensics** - DBA-level query analysis capabilities
 - ✅ Network analysis (connection states, retransmissions, errors, dropped packets)
 - ✅ **Automatic AWS Support case creation** with diagnostic data
 - ✅ Graceful degradation when tools unavailable
@@ -323,6 +317,12 @@ The tool automatically detects:
 - Slow queries detected (MySQL: >100 slow query log entries)
 - High connection churn (>1,000 TIME_WAIT connections on database ports)
 - Excessive resource usage by database processes
+- Top 5 queries by CPU/time, long-running queries (>30s), blocking detection
+- **SQL Server/MySQL/PostgreSQL**: DMV/performance schema queries, active sessions, wait states
+- **MongoDB**: currentOp() and profiler analysis for slow operations
+- **Redis**: SLOWLOG, ops/sec metrics, connection rejection tracking
+- **Oracle**: v$session and v$sql analysis, blocking session detection
+- **Elasticsearch**: Tasks API for long-running searches, thread pool monitoring
 
 **Supported Databases:**
 - MySQL / MariaDB
