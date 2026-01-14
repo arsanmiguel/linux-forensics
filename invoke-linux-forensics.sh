@@ -885,6 +885,38 @@ analyze_databases() {
             if [[ -n "$long_running" ]] && (( long_running > 0 )); then
                 log_bottleneck "Database" "Long-running PostgreSQL queries detected (>30s)" "Yes" "30s" "High"
             fi
+            
+            # DMS-specific checks for PostgreSQL
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "  DMS Migration Readiness:" | tee -a "$OUTPUT_FILE"
+            
+            # Check WAL level (logical required for DMS)
+            local wal_level=$(psql -U postgres -t -c "SHOW wal_level;" 2>/dev/null | tr -d ' ')
+            echo "    WAL Level: ${wal_level:-Unknown}" | tee -a "$OUTPUT_FILE"
+            if [[ "$wal_level" != "logical" ]]; then
+                log_bottleneck "DMS" "PostgreSQL wal_level not 'logical' - required for DMS CDC" "${wal_level}" "logical" "High"
+            fi
+            
+            # Check replication slots
+            local repl_slots=$(psql -U postgres -t -c "SELECT COUNT(*) FROM pg_replication_slots;" 2>/dev/null | tr -d ' ')
+            echo "    Replication Slots: ${repl_slots:-0}" | tee -a "$OUTPUT_FILE"
+            
+            # Check for replication lag (if standby)
+            local is_standby=$(psql -U postgres -t -c "SELECT pg_is_in_recovery();" 2>/dev/null | tr -d ' ')
+            if [[ "$is_standby" == "t" ]]; then
+                local lag=$(psql -U postgres -t -c "SELECT EXTRACT(EPOCH FROM (now() - pg_last_xact_replay_timestamp()));" 2>/dev/null | tr -d ' ')
+                echo "    Replication Lag: ${lag:-Unknown} seconds" | tee -a "$OUTPUT_FILE"
+                if [[ -n "$lag" ]] && (( $(echo "$lag > 300" | bc -l 2>/dev/null || echo 0) )); then
+                    log_bottleneck "Database" "High PostgreSQL replication lag" "${lag}s" "300s" "High"
+                fi
+            fi
+            
+            # Check max_replication_slots
+            local max_slots=$(psql -U postgres -t -c "SHOW max_replication_slots;" 2>/dev/null | tr -d ' ')
+            echo "    Max Replication Slots: ${max_slots:-Unknown}" | tee -a "$OUTPUT_FILE"
+            if [[ -n "$max_slots" ]] && (( max_slots < 1 )); then
+                log_bottleneck "DMS" "PostgreSQL max_replication_slots is 0 - DMS requires at least 1" "${max_slots}" ">=1" "High"
+            fi
         fi
     fi
     
@@ -1018,6 +1050,33 @@ analyze_databases() {
             if [[ -n "$long_running" ]] && (( long_running > 0 )); then
                 log_bottleneck "Database" "Long-running Oracle sessions detected (>30min)" "Yes" "30min" "High"
             fi
+            
+            # DMS-specific checks for Oracle
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "  DMS Migration Readiness:" | tee -a "$OUTPUT_FILE"
+            
+            # Check archive log mode (required for CDC)
+            local log_mode=$(echo "SELECT log_mode FROM v\$database;" | sqlplus -S / as sysdba 2>/dev/null | grep -E "ARCHIVELOG|NOARCHIVELOG" | tr -d ' ')
+            echo "    Archive Log Mode: ${log_mode:-Unknown}" | tee -a "$OUTPUT_FILE"
+            if [[ "$log_mode" != "ARCHIVELOG" ]]; then
+                log_bottleneck "DMS" "Oracle not in ARCHIVELOG mode - required for DMS CDC" "${log_mode}" "ARCHIVELOG" "High"
+            fi
+            
+            # Check supplemental logging
+            local supp_log=$(echo "SELECT supplemental_log_data_min FROM v\$database;" | sqlplus -S / as sysdba 2>/dev/null | grep -E "YES|NO" | tr -d ' ')
+            echo "    Supplemental Logging: ${supp_log:-Unknown}" | tee -a "$OUTPUT_FILE"
+            if [[ "$supp_log" != "YES" ]]; then
+                log_bottleneck "DMS" "Oracle supplemental logging not enabled - required for DMS CDC" "${supp_log}" "YES" "High"
+            fi
+            
+            # Check for standby lag (if Data Guard)
+            local standby_lag=$(echo "SELECT MAX(ROUND((SYSDATE - applied_time) * 24 * 60)) FROM v\$archived_log WHERE applied = 'YES';" | sqlplus -S / as sysdba 2>/dev/null | grep -o '[0-9]*' | head -1)
+            if [[ -n "$standby_lag" ]] && (( standby_lag > 0 )); then
+                echo "    Standby Apply Lag: ${standby_lag} minutes" | tee -a "$OUTPUT_FILE"
+                if (( standby_lag > 30 )); then
+                    log_bottleneck "Database" "High Oracle standby apply lag" "${standby_lag}min" "30min" "Medium"
+                fi
+            fi
         fi
     fi
     
@@ -1051,6 +1110,30 @@ analyze_databases() {
             local long_running=$(sqlcmd -S localhost -E -Q "SELECT COUNT(*) FROM sys.dm_exec_requests WHERE total_elapsed_time > 30000;" -h -1 -W 2>/dev/null | tail -1 | tr -d ' ')
             if [[ -n "$long_running" ]] && (( long_running > 0 )); then
                 log_bottleneck "Database" "Long-running SQL queries detected (>30s)" "Yes" "30s" "High"
+            fi
+            
+            # DMS-specific checks for SQL Server
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "  DMS Migration Readiness:" | tee -a "$OUTPUT_FILE"
+            
+            # Check if SQL Server Agent is running (required for CDC)
+            local agent_status=$(sqlcmd -S localhost -E -Q "SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.dm_server_services WHERE servicename LIKE '%Agent%' AND status_desc = 'Running') THEN 'Running' ELSE 'Stopped' END AS AgentStatus;" -h -1 -W 2>/dev/null | tail -1 | tr -d ' ')
+            echo "    SQL Server Agent: ${agent_status:-Unknown}" | tee -a "$OUTPUT_FILE"
+            if [[ "$agent_status" != "Running" ]]; then
+                log_bottleneck "DMS" "SQL Server Agent not running - required for DMS CDC" "${agent_status}" "Running" "High"
+            fi
+            
+            # Check if database is in FULL recovery model (required for CDC)
+            local recovery_model=$(sqlcmd -S localhost -E -Q "SELECT name, recovery_model_desc FROM sys.databases WHERE name NOT IN ('master','model','msdb','tempdb');" -h -1 -W 2>/dev/null | grep -v "^$" | head -5 | tee -a "$OUTPUT_FILE")
+            if echo "$recovery_model" | grep -q "SIMPLE"; then
+                log_bottleneck "DMS" "SQL Server database(s) in SIMPLE recovery - DMS CDC requires FULL" "SIMPLE" "FULL" "High"
+            fi
+            
+            # Check for AlwaysOn lag (if replica)
+            local replica_lag=$(sqlcmd -S localhost -E -Q "SELECT ar.replica_server_name, drs.synchronization_state_desc, drs.log_send_queue_size, drs.redo_queue_size FROM sys.dm_hadr_database_replica_states drs INNER JOIN sys.availability_replicas ar ON drs.replica_id = ar.replica_id WHERE drs.is_local = 1;" -h -1 -W 2>/dev/null | grep -v "^$" | head -5)
+            if [[ -n "$replica_lag" ]]; then
+                echo "    AlwaysOn Replica Status:" | tee -a "$OUTPUT_FILE"
+                echo "$replica_lag" | tee -a "$OUTPUT_FILE"
             fi
         fi
     fi

@@ -24,16 +24,37 @@ A comprehensive Bash-based diagnostic tool for Linux servers that automatically 
 
 **This tool is designed to run on your SOURCE DATABASE SERVER**, not on the DMS replication instance (which is AWS-managed).
 
-**What it checks for DMS:**
-- ✅ MySQL binary logging enabled (required for CDC)
-- ✅ MySQL binlog format set to ROW (required for DMS)
-- ✅ Binary log retention configured
+**What it checks for DMS by database type:**
+
+**MySQL/MariaDB:**
+- ✅ Binary logging enabled (log_bin=ON, required for CDC)
+- ✅ Binlog format set to ROW (required for DMS)
+- ✅ Binary log retention configured (expire_logs_days >= 1)
 - ✅ Replication lag (if source is a replica)
+
+**PostgreSQL:**
+- ✅ WAL level set to 'logical' (required for CDC)
+- ✅ Replication slots configured (max_replication_slots >= 1)
+- ✅ Replication lag (if standby server)
+
+**Oracle:**
+- ✅ ARCHIVELOG mode enabled (required for CDC)
+- ✅ Supplemental logging enabled (required for DMS)
+- ✅ Data Guard apply lag (if standby)
+
+**SQL Server:**
+- ✅ SQL Server Agent running (required for CDC)
+- ✅ Database recovery model set to FULL (required for CDC)
+- ✅ AlwaysOn replica lag (if applicable)
+
+**All Databases:**
 - ✅ CloudWatch Logs Agent running
 - ✅ Database connection health
 - ✅ Network connectivity to database ports
 - ✅ Connection churn that could impact DMS
 - ✅ Source database performance issues
+- ✅ Long-running queries/sessions
+- ✅ High connection counts
 
 **Run this when:**
 - Planning a DMS migration (pre-migration assessment)
@@ -41,6 +62,7 @@ A comprehensive Bash-based diagnostic tool for Linux servers that automatically 
 - Source database performance issues
 - High replication lag
 - Connection errors in DMS logs
+- CDC not capturing changes
 
 ---
 
