@@ -1,0 +1,51 @@
+[0;36m[14:03:25] Detected OS: unknown[0m
+[0;36m[14:03:25] Package Manager: unknown[0m
+[0;36m[14:03:25] Starting forensics analysis in quick mode...[0m
+[0;36m[14:03:25] Output file: /Users/adrianrs/localrepo/linux-performance-forensic-tools/linux-forensics-20260114-140325.txt[0m
+[0;36m[14:03:25] Checking required utilities...[0m
+[1;33m[14:03:25] Unknown distribution - will attempt to use available tools[0m
+
+================================================================================
+  SYSTEM INFORMATION
+================================================================================
+
+[0;36m[14:03:25] Gathering system information...[0m
+Hostname: 603e5f63d01a
+Kernel: 24.6.0
+OS: 
+Architecture: arm64
+Uptime: 
+CPU: 
+CPU Cores: 
+Total Memory: 
+Instance ID: Not EC2
+[0;32m[14:03:27] System information collected[0m
+
+================================================================================
+  CPU FORENSICS
+================================================================================
+
+[0;36m[14:03:27] Analyzing CPU performance...[0m
+Load Average: 
+Load per Core: 
+[1;33m[14:03:28] mpstat not available, using top for CPU sampling...[0m
+CPU Usage: %
+[1;33m[14:03:28] vmstat not available - skipping context switch analysis[0m
+
+Top 10 CPU-consuming processes:
+[1;33m[14:03:28] Unable to list top CPU consumers[0m
+[0;32m[14:03:28] CPU forensics completed[0m
+
+================================================================================
+  MEMORY FORENSICS
+================================================================================
+
+[0;36m[14:03:28] Analyzing memory usage...[0m
+[1;33m[14:03:28] Unable to get memory statistics[0m
+
+================================================================================
+  FORENSICS SUMMARY
+================================================================================
+
+[0;32m[14:03:28] Analysis completed in 3 seconds[0m
+[0;36m[14:03:28] Detailed report saved to: /Users/adrianrs/localrepo/linux-performance-forensic-tools/linux-forensics-20260114-140325.txt[0m

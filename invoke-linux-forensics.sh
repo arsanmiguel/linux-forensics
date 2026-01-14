@@ -773,6 +773,37 @@ analyze_databases() {
     
     local databases_found=false
     
+    # Check for DMS replication instance
+    if pgrep -f "dms-rep" >/dev/null 2>&1 || pgrep -f "aws-dms" >/dev/null 2>&1; then
+        databases_found=true
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "=== AWS DMS Replication Instance Detected ===" | tee -a "$OUTPUT_FILE"
+        
+        # DMS process info
+        ps aux | grep -E "[d]ms-rep|[a]ws-dms" | awk '{printf "  Process: PID %s, CPU: %s%%, MEM: %s%%\n", $2, $3, $4}' | tee -a "$OUTPUT_FILE"
+        
+        # Check DMS logs
+        if [[ -d /var/log/dms ]]; then
+            echo "  DMS Logs Directory: /var/log/dms" | tee -a "$OUTPUT_FILE"
+            local recent_errors=$(find /var/log/dms -name "*.log" -mtime -1 -exec grep -i "error\|failed\|exception" {} \; 2>/dev/null | wc -l)
+            echo "  Recent Errors (last 24h): ${recent_errors}" | tee -a "$OUTPUT_FILE"
+            
+            if (( recent_errors > 100 )); then
+                log_bottleneck "DMS" "High error count in DMS logs" "${recent_errors}" "100" "High"
+            fi
+        fi
+        
+        # Check CloudWatch Logs Agent
+        if pgrep -f "amazon-cloudwatch-agent" >/dev/null 2>&1; then
+            echo "  CloudWatch Logs Agent: Running" | tee -a "$OUTPUT_FILE"
+        else
+            echo "  CloudWatch Logs Agent: Not detected" | tee -a "$OUTPUT_FILE"
+            log_bottleneck "DMS" "CloudWatch Logs Agent not running" "No" "Yes" "Medium"
+        fi
+        
+        echo "" | tee -a "$OUTPUT_FILE"
+    fi
+    
     # MySQL/MariaDB Detection
     if pgrep -x mysqld >/dev/null 2>&1 || pgrep -x mariadbd >/dev/null 2>&1; then
         databases_found=true
@@ -1205,6 +1236,28 @@ analyze_network() {
         echo "" | tee -a "$OUTPUT_FILE"
         echo "Network Queue Settings:" | tee -a "$OUTPUT_FILE"
         echo "  Max backlog: ${max_backlog}" | tee -a "$OUTPUT_FILE"
+    fi
+    
+    # DMS-specific network checks
+    if pgrep -f "dms-rep" >/dev/null 2>&1 || pgrep -f "aws-dms" >/dev/null 2>&1; then
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "DMS Network Connectivity:" | tee -a "$OUTPUT_FILE"
+        
+        # Check for DMS-related connections
+        local dms_conns=$(netstat -ant 2>/dev/null | grep -E ":3306|:5432|:1521|:1433|:27017" | grep ESTABLISHED | wc -l || echo "0")
+        echo "  Active Database Connections: ${dms_conns}" | tee -a "$OUTPUT_FILE"
+        
+        if (( dms_conns == 0 )); then
+            log_bottleneck "DMS" "No active database connections detected" "0" ">0" "High"
+        fi
+        
+        # Check for connection churn (high TIME_WAIT on database ports)
+        local db_time_wait=$(netstat -ant 2>/dev/null | grep -E ":3306|:5432|:1521|:1433|:27017" | grep TIME_WAIT | wc -l || echo "0")
+        echo "  Database TIME_WAIT Connections: ${db_time_wait}" | tee -a "$OUTPUT_FILE"
+        
+        if (( db_time_wait > 1000 )); then
+            log_bottleneck "DMS" "High connection churn on database ports" "${db_time_wait}" "1000" "Medium"
+        fi
     fi
     
     log_success "Network forensics completed"

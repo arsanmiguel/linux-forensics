@@ -2,18 +2,19 @@
 
 ## Overview
 
-A comprehensive Bash-based diagnostic tool for Linux servers that automatically detects performance bottlenecks and can create AWS Support cases with detailed forensic data. Uses only open-source utilities and automatically installs missing dependencies when possible.
+A comprehensive Bash-based diagnostic tool for Linux servers that automatically detects performance bottlenecks and can create AWS Support cases with detailed forensic data. Originally created for AWS DMS migrations, now useful for any Linux performance troubleshooting scenario. Uses only open-source utilities and automatically installs missing dependencies when possible.
 
 **Key Features:**
 - ✅ Comprehensive performance forensics (CPU, Memory, Disk, Network, Database)
+- ✅ **AWS DMS migration diagnostics** (replication instance detection, CloudWatch Logs Agent, database connectivity)
 - ✅ Automated bottleneck detection
 - ✅ **Automatic dependency installation** (Debian/Ubuntu, RHEL/CentOS/Amazon Linux)
 - ✅ Multi-distro support with intelligent fallbacks
 - ✅ CPU forensics (load average, context switches, steal time, thread analysis)
 - ✅ Memory forensics (OOM detection, swap analysis, page faults, slab memory, leak detection)
-- ✅ Disk I/O testing (usage, wait times, read/write performance)
+- ✅ Disk I/O testing (usage, wait times, read/write performance, iotop support, D state detection)
 - ✅ **Database forensics** - DBA-level query analysis capabilities
-- ✅ Network analysis (connection states, retransmissions, errors, dropped packets)
+- ✅ Network analysis (connection states, retransmissions, errors, dropped packets, DMS connectivity)
 - ✅ **Automatic AWS Support case creation** with diagnostic data
 - ✅ Graceful degradation when tools unavailable
 
