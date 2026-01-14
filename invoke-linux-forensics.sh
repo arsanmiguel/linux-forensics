@@ -6,6 +6,8 @@
 # Comprehensive performance diagnostics with automatic bottleneck detection
 # and AWS Support integration
 #
+# Supports: Debian/Ubuntu, RHEL/CentOS/Amazon Linux, AIX, HP-UX
+#
 # Usage: sudo ./invoke-linux-forensics.sh [OPTIONS]
 #
 # Options:
@@ -19,6 +21,21 @@
 # Optional: AWS CLI for support case creation
 #############################################################################
 
+# Check if bash is available, if not try to re-execute with bash
+if [ -z "$BASH_VERSION" ]; then
+    if command -v bash >/dev/null 2>&1; then
+        exec bash "$0" "$@"
+    else
+        echo "ERROR: This script requires bash, but it's not available."
+        echo "Please install bash using your system's package manager:"
+        echo "  - Debian/Ubuntu: apt-get install bash"
+        echo "  - RHEL/CentOS: yum install bash"
+        echo "  - AIX: Install from AIX Toolbox (bash.rte)"
+        echo "  - HP-UX: Install from HP-UX Software Depot"
+        exit 1
+    fi
+fi
+
 set -euo pipefail
 
 # Default values
@@ -29,6 +46,9 @@ OUTPUT_DIR="$(pwd)"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 OUTPUT_FILE="${OUTPUT_DIR}/linux-forensics-${TIMESTAMP}.txt"
 BOTTLENECKS=()
+DISTRO=""
+PACKAGE_MANAGER=""
+MISSING_PACKAGES=()
 
 # Colors
 RED='\033[0;31m'
@@ -37,6 +57,272 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 MAGENTA='\033[0;35m'
 NC='\033[0m' # No Color
+
+#############################################################################
+# System Detection
+#############################################################################
+
+detect_os() {
+    if [[ -f /etc/os-release ]]; then
+        . /etc/os-release
+        DISTRO="$ID"
+    elif [[ -f /etc/redhat-release ]]; then
+        DISTRO="rhel"
+    elif [[ -f /etc/debian_version ]]; then
+        DISTRO="debian"
+    elif uname -s | grep -qi "aix"; then
+        DISTRO="aix"
+    elif uname -s | grep -qi "hp-ux"; then
+        DISTRO="hpux"
+    else
+        DISTRO="unknown"
+    fi
+    
+    # Determine package manager
+    case "$DISTRO" in
+        ubuntu|debian)
+            PACKAGE_MANAGER="apt-get"
+            ;;
+        rhel|centos|fedora|amzn|rocky|alma)
+            if command -v dnf >/dev/null 2>&1; then
+                PACKAGE_MANAGER="dnf"
+            else
+                PACKAGE_MANAGER="yum"
+            fi
+            ;;
+        sles|opensuse*)
+            PACKAGE_MANAGER="zypper"
+            ;;
+        aix)
+            PACKAGE_MANAGER="aix"
+            ;;
+        hpux)
+            PACKAGE_MANAGER="hpux"
+            ;;
+        *)
+            PACKAGE_MANAGER="unknown"
+            ;;
+    esac
+}
+
+check_internet_connectivity() {
+    local test_hosts=("8.8.8.8" "1.1.1.1" "169.254.169.254")
+    
+    for host in "${test_hosts[@]}"; do
+        if ping -c 1 -W 2 "$host" >/dev/null 2>&1; then
+            return 0
+        fi
+    done
+    
+    return 1
+}
+
+diagnose_package_install_failure() {
+    local package="$1"
+    
+    echo "" | tee -a "$OUTPUT_FILE"
+    log_error "Failed to install required package: ${package}"
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "DIAGNOSTIC INFORMATION:" | tee -a "$OUTPUT_FILE"
+    echo "======================" | tee -a "$OUTPUT_FILE"
+    
+    # Check internet connectivity
+    if ! check_internet_connectivity; then
+        echo "❌ No internet connectivity detected" | tee -a "$OUTPUT_FILE"
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Possible causes:" | tee -a "$OUTPUT_FILE"
+        echo "  1. Network interface is down" | tee -a "$OUTPUT_FILE"
+        echo "  2. No default gateway configured" | tee -a "$OUTPUT_FILE"
+        echo "  3. DNS resolution not working" | tee -a "$OUTPUT_FILE"
+        echo "  4. Firewall blocking outbound connections" | tee -a "$OUTPUT_FILE"
+        echo "  5. Proxy configuration required" | tee -a "$OUTPUT_FILE"
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Troubleshooting steps:" | tee -a "$OUTPUT_FILE"
+        echo "  - Check network interface: ip addr show" | tee -a "$OUTPUT_FILE"
+        echo "  - Check routing: ip route show" | tee -a "$OUTPUT_FILE"
+        echo "  - Check DNS: cat /etc/resolv.conf" | tee -a "$OUTPUT_FILE"
+        echo "  - Test connectivity: ping 8.8.8.8" | tee -a "$OUTPUT_FILE"
+        echo "  - Check proxy settings: echo \$http_proxy" | tee -a "$OUTPUT_FILE"
+    else
+        echo "✓ Internet connectivity OK" | tee -a "$OUTPUT_FILE"
+    fi
+    
+    # Check repository configuration
+    echo "" | tee -a "$OUTPUT_FILE"
+    case "$PACKAGE_MANAGER" in
+        apt-get)
+            echo "Repository configuration:" | tee -a "$OUTPUT_FILE"
+            if [[ -f /etc/apt/sources.list ]]; then
+                echo "  - /etc/apt/sources.list exists" | tee -a "$OUTPUT_FILE"
+                local repo_count=$(grep -v "^#" /etc/apt/sources.list | grep -c "^deb" || echo "0")
+                echo "  - Active repositories: ${repo_count}" | tee -a "$OUTPUT_FILE"
+            fi
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "Try updating package cache:" | tee -a "$OUTPUT_FILE"
+            echo "  sudo apt-get update" | tee -a "$OUTPUT_FILE"
+            ;;
+        yum|dnf)
+            echo "Repository configuration:" | tee -a "$OUTPUT_FILE"
+            local repo_count=$($PACKAGE_MANAGER repolist 2>/dev/null | grep -c "^[^!]" || echo "0")
+            echo "  - Active repositories: ${repo_count}" | tee -a "$OUTPUT_FILE"
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "Try:" | tee -a "$OUTPUT_FILE"
+            echo "  sudo ${PACKAGE_MANAGER} clean all" | tee -a "$OUTPUT_FILE"
+            echo "  sudo ${PACKAGE_MANAGER} makecache" | tee -a "$OUTPUT_FILE"
+            ;;
+    esac
+    
+    # Check disk space
+    echo "" | tee -a "$OUTPUT_FILE"
+    local root_usage=$(df -h / | tail -1 | awk '{print $5}' | sed 's/%//')
+    echo "Disk space on /: ${root_usage}% used" | tee -a "$OUTPUT_FILE"
+    if (( root_usage > 90 )); then
+        echo "  ⚠️  WARNING: Low disk space may prevent package installation" | tee -a "$OUTPUT_FILE"
+    fi
+    
+    # Manual installation instructions
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "MANUAL INSTALLATION:" | tee -a "$OUTPUT_FILE"
+    echo "===================" | tee -a "$OUTPUT_FILE"
+    
+    case "$DISTRO" in
+        ubuntu|debian)
+            echo "Try installing manually:" | tee -a "$OUTPUT_FILE"
+            echo "  sudo apt-get update" | tee -a "$OUTPUT_FILE"
+            echo "  sudo apt-get install -y ${package}" | tee -a "$OUTPUT_FILE"
+            ;;
+        rhel|centos|fedora|amzn|rocky|alma)
+            echo "Try installing manually:" | tee -a "$OUTPUT_FILE"
+            echo "  sudo ${PACKAGE_MANAGER} install -y ${package}" | tee -a "$OUTPUT_FILE"
+            ;;
+        aix)
+            echo "Install from AIX Toolbox:" | tee -a "$OUTPUT_FILE"
+            echo "  1. Download from: https://www.ibm.com/support/pages/aix-toolbox-linux-applications" | tee -a "$OUTPUT_FILE"
+            echo "  2. Or use: rpm -ivh ${package}.rpm" | tee -a "$OUTPUT_FILE"
+            ;;
+        hpux)
+            echo "Install from HP-UX Software Depot:" | tee -a "$OUTPUT_FILE"
+            echo "  swinstall -s /path/to/depot ${package}" | tee -a "$OUTPUT_FILE"
+            ;;
+    esac
+    
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "The script will continue with limited functionality..." | tee -a "$OUTPUT_FILE"
+    echo "" | tee -a "$OUTPUT_FILE"
+}
+
+install_package() {
+    local package="$1"
+    
+    log_info "Installing ${package}..."
+    
+    case "$PACKAGE_MANAGER" in
+        apt-get)
+            if apt-get update >/dev/null 2>&1 && apt-get install -y "$package" >/dev/null 2>&1; then
+                log_success "${package} installed successfully"
+                return 0
+            fi
+            ;;
+        yum|dnf)
+            if $PACKAGE_MANAGER install -y "$package" >/dev/null 2>&1; then
+                log_success "${package} installed successfully"
+                return 0
+            fi
+            ;;
+        zypper)
+            if zypper install -y "$package" >/dev/null 2>&1; then
+                log_success "${package} installed successfully"
+                return 0
+            fi
+            ;;
+        aix)
+            log_warning "AIX detected - please install ${package} manually from AIX Toolbox"
+            MISSING_PACKAGES+=("$package")
+            return 1
+            ;;
+        hpux)
+            log_warning "HP-UX detected - please install ${package} manually from Software Depot"
+            MISSING_PACKAGES+=("$package")
+            return 1
+            ;;
+        *)
+            log_warning "Unknown package manager - cannot auto-install ${package}"
+            MISSING_PACKAGES+=("$package")
+            return 1
+            ;;
+    esac
+    
+    diagnose_package_install_failure "$package"
+    MISSING_PACKAGES+=("$package")
+    return 1
+}
+
+check_and_install_dependencies() {
+    log_info "Checking required utilities..."
+    
+    local required_commands=()
+    local package_map=()
+    
+    # Define required commands and their packages per distro
+    case "$DISTRO" in
+        ubuntu|debian)
+            required_commands=("mpstat" "iostat" "vmstat" "netstat" "bc")
+            package_map=("sysstat" "sysstat" "procps" "net-tools" "bc")
+            ;;
+        rhel|centos|fedora|amzn|rocky|alma)
+            required_commands=("mpstat" "iostat" "vmstat" "netstat" "bc")
+            package_map=("sysstat" "sysstat" "procps-ng" "net-tools" "bc")
+            ;;
+        aix)
+            required_commands=("vmstat" "iostat" "netstat")
+            package_map=("base" "base" "base")
+            ;;
+        hpux)
+            required_commands=("vmstat" "iostat" "netstat")
+            package_map=("base" "base" "base")
+            ;;
+        *)
+            log_warning "Unknown distribution - will attempt to use available tools"
+            return
+            ;;
+    esac
+    
+    local missing=false
+    for i in "${!required_commands[@]}"; do
+        local cmd="${required_commands[$i]}"
+        local pkg="${package_map[$i]}"
+        
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            log_warning "${cmd} not found"
+            
+            if [[ "$pkg" != "base" ]]; then
+                if install_package "$pkg"; then
+                    # Verify installation
+                    if ! command -v "$cmd" >/dev/null 2>&1; then
+                        log_warning "${cmd} still not available after package installation"
+                        missing=true
+                    fi
+                else
+                    missing=true
+                fi
+            else
+                log_warning "${cmd} should be part of base system but is missing"
+                missing=true
+            fi
+        fi
+    done
+    
+    if [[ "$missing" == true ]]; then
+        log_warning "Some utilities are missing - diagnostics will be limited"
+        if [[ ${#MISSING_PACKAGES[@]} -gt 0 ]]; then
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "Missing packages: ${MISSING_PACKAGES[*]}" | tee -a "$OUTPUT_FILE"
+            echo "The script will continue with available tools..." | tee -a "$OUTPUT_FILE"
+        fi
+    else
+        log_success "All required utilities are available"
+    fi
+}
 
 #############################################################################
 # Helper Functions
@@ -155,47 +441,92 @@ analyze_cpu() {
     # Load average
     local load_avg=$(uptime | awk -F'load average:' '{print $2}' | xargs)
     local load_1min=$(echo "$load_avg" | cut -d',' -f1 | xargs)
-    local cpu_cores=$(nproc)
-    local load_per_core=$(echo "scale=2; $load_1min / $cpu_cores" | bc)
+    local cpu_cores=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo "1")
+    
+    if command -v bc >/dev/null 2>&1; then
+        local load_per_core=$(echo "scale=2; $load_1min / $cpu_cores" | bc)
+    else
+        local load_per_core=$(awk "BEGIN {printf \"%.2f\", $load_1min / $cpu_cores}")
+    fi
     
     echo "Load Average: ${load_avg}" | tee -a "$OUTPUT_FILE"
     echo "Load per Core: ${load_per_core}" | tee -a "$OUTPUT_FILE"
     
-    if (( $(echo "$load_per_core > 1.0" | bc -l) )); then
-        log_bottleneck "CPU" "High load average" "${load_per_core} per core" "1.0 per core" "High"
+    if command -v bc >/dev/null 2>&1; then
+        if (( $(echo "$load_per_core > 1.0" | bc -l) )); then
+            log_bottleneck "CPU" "High load average" "${load_per_core} per core" "1.0 per core" "High"
+        fi
+    else
+        if (( $(awk "BEGIN {print ($load_per_core > 1.0)}") )); then
+            log_bottleneck "CPU" "High load average" "${load_per_core} per core" "1.0 per core" "High"
+        fi
     fi
     
-    # CPU usage
-    log_info "Sampling CPU usage (10 seconds)..."
-    local cpu_idle=$(mpstat 1 10 | tail -1 | awk '{print $NF}')
-    local cpu_usage=$(echo "scale=2; 100 - $cpu_idle" | bc)
+    # CPU usage - try mpstat first, fallback to top
+    if command -v mpstat >/dev/null 2>&1; then
+        log_info "Sampling CPU usage with mpstat (10 seconds)..."
+        local cpu_idle=$(mpstat 1 10 2>/dev/null | tail -1 | awk '{print $NF}')
+        if command -v bc >/dev/null 2>&1; then
+            local cpu_usage=$(echo "scale=2; 100 - $cpu_idle" | bc)
+        else
+            local cpu_usage=$(awk "BEGIN {printf \"%.2f\", 100 - $cpu_idle}")
+        fi
+    else
+        log_warning "mpstat not available, using top for CPU sampling..."
+        local cpu_idle=$(top -bn2 -d1 | grep "Cpu(s)" | tail -1 | awk '{print $8}' | sed 's/%id,//')
+        if command -v bc >/dev/null 2>&1; then
+            local cpu_usage=$(echo "scale=2; 100 - $cpu_idle" | bc)
+        else
+            local cpu_usage=$(awk "BEGIN {printf \"%.2f\", 100 - $cpu_idle}")
+        fi
+    fi
     
     echo "CPU Usage: ${cpu_usage}%" | tee -a "$OUTPUT_FILE"
     
-    if (( $(echo "$cpu_usage > 80" | bc -l) )); then
-        log_bottleneck "CPU" "High CPU utilization" "${cpu_usage}%" "80%" "High"
+    if command -v bc >/dev/null 2>&1; then
+        if (( $(echo "$cpu_usage > 80" | bc -l) )); then
+            log_bottleneck "CPU" "High CPU utilization" "${cpu_usage}%" "80%" "High"
+        fi
+    else
+        if (( $(awk "BEGIN {print ($cpu_usage > 80)}") )); then
+            log_bottleneck "CPU" "High CPU utilization" "${cpu_usage}%" "80%" "High"
+        fi
     fi
     
-    # Context switches
-    local ctx_switches=$(vmstat 1 5 | tail -1 | awk '{print $12}')
-    echo "Context Switches: ${ctx_switches}/sec" | tee -a "$OUTPUT_FILE"
-    
-    if (( ctx_switches > 15000 )); then
-        log_bottleneck "CPU" "Excessive context switches" "${ctx_switches}/sec" "15000/sec" "Medium"
+    # Context switches - try vmstat
+    if command -v vmstat >/dev/null 2>&1; then
+        local ctx_switches=$(vmstat 1 5 2>/dev/null | tail -1 | awk '{print $12}')
+        echo "Context Switches: ${ctx_switches}/sec" | tee -a "$OUTPUT_FILE"
+        
+        if (( ctx_switches > 15000 )); then
+            log_bottleneck "CPU" "Excessive context switches" "${ctx_switches}/sec" "15000/sec" "Medium"
+        fi
+    else
+        log_warning "vmstat not available - skipping context switch analysis"
     fi
     
-    # CPU steal time (for VMs)
-    local cpu_steal=$(mpstat 1 5 | tail -1 | awk '{print $(NF-1)}')
-    echo "CPU Steal Time: ${cpu_steal}%" | tee -a "$OUTPUT_FILE"
-    
-    if (( $(echo "$cpu_steal > 10" | bc -l) )); then
-        log_bottleneck "CPU" "High CPU steal time (hypervisor contention)" "${cpu_steal}%" "10%" "High"
+    # CPU steal time (for VMs) - only if mpstat available
+    if command -v mpstat >/dev/null 2>&1; then
+        local cpu_steal=$(mpstat 1 5 2>/dev/null | tail -1 | awk '{print $(NF-1)}')
+        echo "CPU Steal Time: ${cpu_steal}%" | tee -a "$OUTPUT_FILE"
+        
+        if command -v bc >/dev/null 2>&1; then
+            if (( $(echo "$cpu_steal > 10" | bc -l) )); then
+                log_bottleneck "CPU" "High CPU steal time (hypervisor contention)" "${cpu_steal}%" "10%" "High"
+            fi
+        else
+            if (( $(awk "BEGIN {print ($cpu_steal > 10)}") )); then
+                log_bottleneck "CPU" "High CPU steal time (hypervisor contention)" "${cpu_steal}%" "10%" "High"
+            fi
+        fi
     fi
     
     # Top CPU consumers
     echo "" | tee -a "$OUTPUT_FILE"
     echo "Top 10 CPU-consuming processes:" | tee -a "$OUTPUT_FILE"
-    ps aux --sort=-%cpu | head -11 | tail -10 | awk '{printf "  %-20s PID: %-8s CPU: %5s%% MEM: %5s%%\n", $11, $2, $3, $4}' | tee -a "$OUTPUT_FILE"
+    ps aux --sort=-%cpu 2>/dev/null | head -11 | tail -10 | awk '{printf "  %-20s PID: %-8s CPU: %5s%% MEM: %5s%%\n", $11, $2, $3, $4}' | tee -a "$OUTPUT_FILE" || \
+    ps -eo comm,pid,pcpu,pmem --sort=-pcpu 2>/dev/null | head -11 | tail -10 | tee -a "$OUTPUT_FILE" || \
+    log_warning "Unable to list top CPU consumers"
     
     log_success "CPU forensics completed"
 }
@@ -285,56 +616,80 @@ analyze_disk() {
     
     # Disk usage
     echo "Disk Usage:" | tee -a "$OUTPUT_FILE"
-    df -h | grep -v tmpfs | grep -v devtmpfs | tee -a "$OUTPUT_FILE"
+    df -h 2>/dev/null | grep -v tmpfs | grep -v devtmpfs | tee -a "$OUTPUT_FILE" || \
+    df -k 2>/dev/null | grep -v tmpfs | grep -v devtmpfs | tee -a "$OUTPUT_FILE" || \
+    log_warning "Unable to get disk usage information"
     
     # Check for full filesystems
     while IFS= read -r line; do
         local usage=$(echo "$line" | awk '{print $5}' | sed 's/%//')
         local mount=$(echo "$line" | awk '{print $6}')
-        if (( usage > 90 )); then
+        if [[ -n "$usage" ]] && (( usage > 90 )); then
             log_bottleneck "Disk" "Filesystem nearly full: ${mount}" "${usage}%" "90%" "High"
         fi
-    done < <(df -h | grep -v tmpfs | grep -v devtmpfs | tail -n +2)
+    done < <(df -h 2>/dev/null | grep -v tmpfs | grep -v devtmpfs | tail -n +2 || df -k 2>/dev/null | grep -v tmpfs | grep -v devtmpfs | tail -n +2)
     
-    # I/O statistics
-    if check_command iostat; then
+    # I/O statistics - try iostat
+    if command -v iostat >/dev/null 2>&1; then
         echo "" | tee -a "$OUTPUT_FILE"
         log_info "Sampling I/O statistics (10 seconds)..."
-        iostat -x 1 10 | tail -n +4 > /tmp/iostat_output.txt
+        iostat -x 1 10 2>/dev/null | tail -n +4 > /tmp/iostat_output.txt 2>/dev/null || true
         
-        echo "I/O Statistics:" | tee -a "$OUTPUT_FILE"
-        cat /tmp/iostat_output.txt | tee -a "$OUTPUT_FILE"
-        
-        # Analyze I/O wait
-        local avg_await=$(cat /tmp/iostat_output.txt | grep -v "^$" | grep -v "Device" | awk '{sum+=$10; count++} END {if(count>0) print sum/count; else print 0}')
-        echo "" | tee -a "$OUTPUT_FILE"
-        echo "Average I/O Wait Time: ${avg_await} ms" | tee -a "$OUTPUT_FILE"
-        
-        if (( $(echo "$avg_await > 20" | bc -l) )); then
-            log_bottleneck "Disk" "High I/O wait time" "${avg_await}ms" "20ms" "High"
+        if [[ -s /tmp/iostat_output.txt ]]; then
+            echo "I/O Statistics:" | tee -a "$OUTPUT_FILE"
+            cat /tmp/iostat_output.txt | tee -a "$OUTPUT_FILE"
+            
+            # Analyze I/O wait
+            local avg_await=$(cat /tmp/iostat_output.txt | grep -v "^$" | grep -v "Device" | awk '{sum+=$10; count++} END {if(count>0) print sum/count; else print 0}')
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "Average I/O Wait Time: ${avg_await} ms" | tee -a "$OUTPUT_FILE"
+            
+            if command -v bc >/dev/null 2>&1; then
+                if (( $(echo "$avg_await > 20" | bc -l) )); then
+                    log_bottleneck "Disk" "High I/O wait time" "${avg_await}ms" "20ms" "High"
+                fi
+            else
+                if (( $(awk "BEGIN {print ($avg_await > 20)}") )); then
+                    log_bottleneck "Disk" "High I/O wait time" "${avg_await}ms" "20ms" "High"
+                fi
+            fi
+            
+            rm -f /tmp/iostat_output.txt
+        else
+            log_warning "iostat produced no output"
         fi
-        
-        rm -f /tmp/iostat_output.txt
+    else
+        log_warning "iostat not available - skipping detailed I/O statistics"
     fi
     
     # Disk I/O test (if in disk mode or deep mode)
     if [[ "$MODE" == "disk" ]] || [[ "$MODE" == "deep" ]]; then
-        if check_command dd; then
+        if command -v dd >/dev/null 2>&1; then
             echo "" | tee -a "$OUTPUT_FILE"
             log_info "Running disk write performance test..."
             
             local test_file="/tmp/forensics_disk_test_$$"
-            local write_speed=$(dd if=/dev/zero of="$test_file" bs=1M count=1024 oflag=direct 2>&1 | grep -oP '\d+\.?\d* MB/s' | head -1)
+            local write_result=$(dd if=/dev/zero of="$test_file" bs=1M count=1024 oflag=direct 2>&1 || echo "failed")
             
-            echo "Disk Write Speed: ${write_speed}" | tee -a "$OUTPUT_FILE"
-            
-            log_info "Running disk read performance test..."
-            sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
-            local read_speed=$(dd if="$test_file" of=/dev/null bs=1M 2>&1 | grep -oP '\d+\.?\d* MB/s' | head -1)
-            
-            echo "Disk Read Speed: ${read_speed}" | tee -a "$OUTPUT_FILE"
+            if [[ "$write_result" != "failed" ]]; then
+                local write_speed=$(echo "$write_result" | grep -oP '\d+\.?\d* MB/s' | head -1 || echo "N/A")
+                echo "Disk Write Speed: ${write_speed}" | tee -a "$OUTPUT_FILE"
+                
+                log_info "Running disk read performance test..."
+                sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+                local read_result=$(dd if="$test_file" of=/dev/null bs=1M 2>&1 || echo "failed")
+                
+                if [[ "$read_result" != "failed" ]]; then
+                    local read_speed=$(echo "$read_result" | grep -oP '\d+\.?\d* MB/s' | head -1 || echo "N/A")
+                    echo "Disk Read Speed: ${read_speed}" | tee -a "$OUTPUT_FILE"
+                fi
+            else
+                log_warning "Disk performance test failed"
+            fi
             
             rm -f "$test_file"
+        else
+            log_warning "dd command not available - skipping disk performance test"
         fi
     fi
     
@@ -596,10 +951,19 @@ main() {
     
     check_root
     
+    # Detect OS and package manager
+    detect_os
+    
     show_banner
     
+    log_info "Detected OS: ${DISTRO}"
+    log_info "Package Manager: ${PACKAGE_MANAGER}"
     log_info "Starting forensics analysis in ${MODE} mode..."
     log_info "Output file: ${OUTPUT_FILE}"
+    echo ""
+    
+    # Check and install dependencies
+    check_and_install_dependencies
     echo ""
     
     local start_time=$(date +%s)
