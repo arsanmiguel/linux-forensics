@@ -26,28 +26,46 @@ A comprehensive Bash-based diagnostic tool for Linux servers that automatically 
 
 **What it checks for DMS by database type:**
 
-**MySQL/MariaDB:**
+<details>
+<summary><strong>MySQL/MariaDB</strong></summary>
+
 - ✅ Binary logging enabled (log_bin=ON, required for CDC)
 - ✅ Binlog format set to ROW (required for DMS)
 - ✅ Binary log retention configured (expire_logs_days >= 1)
 - ✅ Replication lag (if source is a replica)
 
-**PostgreSQL:**
+</details>
+
+<details>
+<summary><strong>PostgreSQL</strong></summary>
+
 - ✅ WAL level set to 'logical' (required for CDC)
 - ✅ Replication slots configured (max_replication_slots >= 1)
 - ✅ Replication lag (if standby server)
 
-**Oracle:**
+</details>
+
+<details>
+<summary><strong>Oracle</strong></summary>
+
 - ✅ ARCHIVELOG mode enabled (required for CDC)
 - ✅ Supplemental logging enabled (required for DMS)
 - ✅ Data Guard apply lag (if standby)
 
-**SQL Server:**
+</details>
+
+<details>
+<summary><strong>SQL Server</strong></summary>
+
 - ✅ SQL Server Agent running (required for CDC)
 - ✅ Database recovery model set to FULL (required for CDC)
 - ✅ AlwaysOn replica lag (if applicable)
 
-**All Databases:**
+</details>
+
+<details>
+<summary><strong>All Databases</strong></summary>
+
 - ✅ CloudWatch Logs Agent running
 - ✅ Database connection health
 - ✅ Network connectivity to database ports
@@ -55,6 +73,8 @@ A comprehensive Bash-based diagnostic tool for Linux servers that automatically 
 - ✅ Source database performance issues
 - ✅ Long-running queries/sessions
 - ✅ High connection counts
+
+</details>
 
 **Run this when:**
 - Planning a DMS migration (pre-migration assessment)
