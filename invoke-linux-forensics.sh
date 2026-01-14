@@ -932,22 +932,14 @@ analyze_databases() {
             echo "" | tee -a "$OUTPUT_FILE"
             echo "  Oracle Query Analysis:" | tee -a "$OUTPUT_FILE"
             
-            sqlplus -S / as sysdba <<EOF 2>/dev/null | tee -a "$OUTPUT_FILE" || echo "  Unable to query Oracle (requires sqlplus and authentication)" | tee -a "$OUTPUT_FILE"
-SET PAGESIZE 50
-SET LINESIZE 200
-SELECT sid, serial#, username, status, ROUND(last_call_et/60, 2) AS duration_min, sql_id, blocking_session, event, wait_time FROM v\$session WHERE status = 'ACTIVE' AND username IS NOT NULL ORDER BY last_call_et DESC FETCH FIRST 5 ROWS ONLY;
-SELECT sql_id, executions, ROUND(elapsed_time/1000000, 2) AS total_time_sec, ROUND(cpu_time/1000000, 2) AS cpu_time_sec, ROUND(buffer_gets/executions, 0) AS avg_buffer_gets, SUBSTR(sql_text, 1, 100) AS sql_text FROM v\$sql ORDER BY elapsed_time DESC FETCH FIRST 5 ROWS ONLY;
-EXIT;
-EOF
+            # Active sessions query
+            echo "SELECT sid, serial#, username, status, ROUND(last_call_et/60, 2) AS duration_min, sql_id, blocking_session, event FROM v\$session WHERE status = 'ACTIVE' AND username IS NOT NULL ORDER BY last_call_et DESC FETCH FIRST 5 ROWS ONLY;" | sqlplus -S / as sysdba 2>/dev/null | tee -a "$OUTPUT_FILE" || echo "  Unable to query Oracle (requires sqlplus and authentication)" | tee -a "$OUTPUT_FILE"
+            
+            # Top queries by elapsed time
+            echo "SELECT sql_id, executions, ROUND(elapsed_time/1000000, 2) AS total_time_sec, ROUND(cpu_time/1000000, 2) AS cpu_time_sec, ROUND(buffer_gets/NULLIF(executions,0), 0) AS avg_buffer_gets FROM v\$sql ORDER BY elapsed_time DESC FETCH FIRST 5 ROWS ONLY;" | sqlplus -S / as sysdba 2>/dev/null | tee -a "$OUTPUT_FILE"
             
             # Check for long-running sessions
-            local long_running=$(sqlplus -S / as sysdba <<EOF 2>/dev/null | tail -1
-SET PAGESIZE 0
-SET FEEDBACK OFF
-SELECT COUNT(*) FROM v\$session WHERE status = 'ACTIVE' AND username IS NOT NULL AND last_call_et > 1800;
-EXIT;
-EOF
-)
+            local long_running=$(echo "SELECT COUNT(*) FROM v\$session WHERE status = 'ACTIVE' AND username IS NOT NULL AND last_call_et > 1800;" | sqlplus -S / as sysdba 2>/dev/null | grep -o '[0-9]*' | head -1)
             if [[ -n "$long_running" ]] && (( long_running > 0 )); then
                 log_bottleneck "Database" "Long-running Oracle sessions detected (>30min)" "Yes" "30min" "High"
             fi
