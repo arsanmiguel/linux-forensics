@@ -153,16 +153,16 @@ sudo ./invoke-linux-forensics.sh -m standard
 # Deep diagnostics with I/O testing (5-10 minutes)
 sudo ./invoke-linux-forensics.sh -m deep
 
-# Auto-create support case if issues found
+# Auto-create support case if issues found (1-2 minutes)
 sudo ./invoke-linux-forensics.sh -m standard -s -v high
 
-# Disk-only diagnostics
+# Disk-only diagnostics (5-10 minutes)
 sudo ./invoke-linux-forensics.sh -m disk
 
-# CPU-only diagnostics
+# CPU-only diagnostics  (5-10 minutes)
 sudo ./invoke-linux-forensics.sh -m cpu
 
-# Memory-only diagnostics
+# Memory-only diagnostics (5-10 minutes)
 sudo ./invoke-linux-forensics.sh -m memory
 
 # Custom output directory
