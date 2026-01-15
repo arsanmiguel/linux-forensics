@@ -51,8 +51,8 @@ A comprehensive Bash-based diagnostic tool for Linux servers that automatically 
 
 1. **Clone the repository:**
 ```bash
-git clone https://github.com/arsanmiguel/linux-performance-forensic-tools.git
-cd linux-performance-forensic-tools
+git clone https://gitlab.aws.dev/arsanmig/linux-forensics.git
+cd linux-forensics
 ```
 
 2. **Make executable:**
@@ -472,6 +472,12 @@ aws support describe-services
 }
 ```
 
+**Important:** AWS Support API access requires a Business, Enterprise On-Ramp, or Enterprise Support plan. If you don't have one of these plans, the script will:
+- Detect the API access error
+- Skip support case creation
+- Continue with diagnostic report generation
+- Save all forensic data locally for manual review
+
 </details>
 
 ---
@@ -606,6 +612,43 @@ For AWS-specific issues, the tool can automatically create support cases with di
 - Works on AWS EC2, Azure VMs, GCP Compute, on-premises, and other cloud providers
 - Uses only open-source utilities (no proprietary tools required)
 - **No warranty or official support provided** - use at your own discretion
+
+### **Expected Performance Impact**
+
+**Quick Mode (1-2 minutes):**
+- CPU: <5% overhead - mostly reading /proc and system stats
+- Memory: <50MB - lightweight data collection
+- Disk I/O: Minimal - no performance testing, only stat collection
+- Network: None - passive monitoring only
+- **Safe for production** - read-only operations
+
+**Standard Mode (3-5 minutes):**
+- CPU: 5-10% overhead - includes sampling and process analysis
+- Memory: <100MB - additional process tree analysis
+- Disk I/O: Minimal - no write testing, only extended stat collection
+- Network: None - passive monitoring only
+- **Safe for production** - read-only operations
+
+**Deep Mode (5-10 minutes):**
+- CPU: 10-20% overhead - includes dd tests and extended sampling
+- Memory: <150MB - comprehensive process and memory analysis
+- Disk I/O: **Moderate impact** - performs dd read/write tests (1GB writes)
+- Network: None - passive monitoring only
+- **Use caution in production** - disk tests may cause temporary I/O spikes
+- Recommendation: Run during maintenance windows or low-traffic periods
+
+**Database Query Analysis (all modes):**
+- CPU: <2% overhead per database - lightweight queries to system tables
+- Memory: <20MB per database - result set caching
+- Database Load: Minimal - uses performance schema/DMVs/system views
+- **Safe for production** - read-only queries, no table locks
+
+**General Guidelines:**
+- The tool is **read-only** except for disk write tests in deep mode
+- No application restarts or configuration changes
+- Monitoring tools (mpstat, iostat, vmstat) run for 10-second intervals
+- Database queries target system/performance tables only, not user data
+- All operations are non-blocking and use minimal system resources
 
 ---
 
