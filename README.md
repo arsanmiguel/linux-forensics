@@ -47,10 +47,6 @@ A comprehensive Bash-based diagnostic tool for Linux servers that automatically 
 - Arch Linux, Manjaro (pacman)
 - Alpine Linux (apk)
 
-**Supported (Manual Package Installation):**
-- AIX 7.1+ (requires AIX Toolbox packages)
-- HP-UX 11i v3+ (requires Software Depot packages)
-
 **Note:** The script automatically detects your OS **and version**, then selects the correct package manager and package names. For example, RHEL 8+ uses `dnf` while RHEL 7 uses `yum`, and iSCSI tools are named differently across distros (`open-iscsi` vs `iscsi-initiator-utils`).
 
 ### **Installation**
@@ -83,10 +79,9 @@ sudo ./invoke-linux-forensics.sh
 
 **System Detection & Setup:**
 - Automatically detects OS distribution and version
-- Identifies available package manager (apt, yum, dnf, zypper)
+- Identifies available package manager (apt, yum, dnf, zypper, pacman, apk)
 - Checks for required utilities (mpstat, iostat, vmstat, netstat, bc)
 - **Automatically installs missing packages** on supported distros
-- Provides manual installation instructions for AIX/HP-UX
 - Continues with graceful degradation if tools unavailable
 
 **CPU Forensics:**
@@ -549,14 +544,6 @@ sudo apt-get install -y sysstat net-tools bc
 sudo zypper install -y sysstat net-tools bc
 ```
 
-**AIX:**
-- Install from AIX Toolbox: https://www.ibm.com/support/pages/aix-toolbox-linux-applications
-- Or use: `rpm -ivh <package>.rpm`
-
-**HP-UX:**
-- Install from HP-UX Software Depot
-- Use: `swinstall -s /path/to/depot <package>`
-
 **Note:** The script will continue with limited functionality if some tools are unavailable, using fallback methods where possible.
 
 </details>
@@ -576,11 +563,15 @@ yum install bash
 apt-get install bash
 ```
 
-**AIX:**
-- Install bash.rte from AIX Toolbox
+**SUSE / openSUSE:**
+```bash
+zypper install bash
+```
 
-**HP-UX:**
-- Install bash from HP-UX Software Depot
+**Arch Linux:**
+```bash
+pacman -S bash
+```
 
 </details>
 
@@ -722,8 +713,7 @@ For AWS-specific issues, the tool can automatically create support cases with di
 
 - This tool requires root/sudo privileges
 - Disk testing may impact system performance temporarily
-- **Automatic package installation** works on Debian/Ubuntu, RHEL/CentOS/Amazon Linux, and SUSE
-- **Manual installation required** for AIX and HP-UX (instructions provided by script)
+- **Automatic package installation** works on Debian/Ubuntu, RHEL/CentOS/Amazon Linux, SUSE, Arch, and Alpine
 - Script uses **graceful degradation** - continues with available tools if some are missing
 - Tested on Ubuntu 18.04+, RHEL 7+, Amazon Linux 2/2023, CentOS 7+, Debian 9+, Rocky Linux 8+, AlmaLinux 8+
 - Works on AWS EC2, Azure VMs, GCP Compute, on-premises, and other cloud providers

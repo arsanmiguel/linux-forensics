@@ -6,7 +6,7 @@
 # Comprehensive performance diagnostics with automatic bottleneck detection
 # and AWS Support integration
 #
-# Supports: Debian/Ubuntu, RHEL/CentOS/Amazon Linux, AIX, HP-UX
+# Supports: Debian/Ubuntu, RHEL/CentOS/Fedora/Amazon Linux, SLES/openSUSE, Arch, Alpine
 #
 # Usage: sudo ./invoke-linux-forensics.sh [OPTIONS]
 #
@@ -29,9 +29,10 @@ if [ -z "$BASH_VERSION" ]; then
         echo "ERROR: This script requires bash, but it's not available."
         echo "Please install bash using your system's package manager:"
         echo "  - Debian/Ubuntu: apt-get install bash"
-        echo "  - RHEL/CentOS: yum install bash"
-        echo "  - AIX: Install from AIX Toolbox (bash.rte)"
-        echo "  - HP-UX: Install from HP-UX Software Depot"
+        echo "  - RHEL/CentOS/Fedora: yum install bash or dnf install bash"
+        echo "  - SLES/openSUSE: zypper install bash"
+        echo "  - Arch: pacman -S bash"
+        echo "  - Alpine: apk add bash"
         exit 1
     fi
 fi
@@ -83,16 +84,6 @@ detect_os() {
         OS_VERSION=$(cat /etc/debian_version)
         OS_VERSION_MAJOR=$(echo "$OS_VERSION" | cut -d. -f1)
         OS_NAME="Debian $OS_VERSION"
-    elif uname -s | grep -qi "aix"; then
-        DISTRO="aix"
-        OS_VERSION=$(oslevel 2>/dev/null || echo "unknown")
-        OS_VERSION_MAJOR=$(echo "$OS_VERSION" | cut -d. -f1)
-        OS_NAME="AIX $OS_VERSION"
-    elif uname -s | grep -qi "hp-ux"; then
-        DISTRO="hpux"
-        OS_VERSION=$(uname -r)
-        OS_VERSION_MAJOR=$(echo "$OS_VERSION" | cut -d. -f2)
-        OS_NAME="HP-UX $OS_VERSION"
     else
         DISTRO="unknown"
         OS_VERSION="unknown"
@@ -146,19 +137,6 @@ detect_os() {
             ;;
         alpine)
             PACKAGE_MANAGER="apk"
-            ;;
-        aix)
-            # AIX can use yum (via AIX Toolbox) or rpm
-            if command -v yum >/dev/null 2>&1; then
-                PACKAGE_MANAGER="yum"
-            elif command -v rpm >/dev/null 2>&1; then
-                PACKAGE_MANAGER="rpm"
-            else
-                PACKAGE_MANAGER="installp"
-            fi
-            ;;
-        hpux)
-            PACKAGE_MANAGER="swinstall"
             ;;
         *)
             # Try to detect package manager if distro unknown
@@ -237,15 +215,6 @@ diagnose_package_install_failure() {
             echo "Try installing manually:" | tee -a "$OUTPUT_FILE"
             echo "  sudo ${PACKAGE_MANAGER} install -y ${package}" | tee -a "$OUTPUT_FILE"
             ;;
-        aix)
-            echo "Install from AIX Toolbox:" | tee -a "$OUTPUT_FILE"
-            echo "  1. Download from: https://www.ibm.com/support/pages/aix-toolbox-linux-applications" | tee -a "$OUTPUT_FILE"
-            echo "  2. Or use: rpm -ivh ${package}.rpm" | tee -a "$OUTPUT_FILE"
-            ;;
-        hpux)
-            echo "Install from HP-UX Software Depot:" | tee -a "$OUTPUT_FILE"
-            echo "  swinstall -s /path/to/depot ${package}" | tee -a "$OUTPUT_FILE"
-            ;;
     esac
     
     echo "" | tee -a "$OUTPUT_FILE"
@@ -288,16 +257,6 @@ install_package() {
                 log_success "${package} installed successfully"
                 return 0
             fi
-            ;;
-        aix)
-            log_warning "AIX detected - please install ${package} manually from AIX Toolbox"
-            MISSING_PACKAGES+=("$package")
-            return 1
-            ;;
-        hpux)
-            log_warning "HP-UX detected - please install ${package} manually from Software Depot"
-            MISSING_PACKAGES+=("$package")
-            return 1
             ;;
         *)
             log_warning "Unknown package manager - cannot auto-install ${package}"
