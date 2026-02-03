@@ -65,47 +65,118 @@ NC='\033[0m' # No Color
 detect_os() {
     if [[ "$(uname -s)" == "Darwin" ]]; then
         DISTRO="macos"
+        OS_VERSION=$(sw_vers -productVersion 2>/dev/null || echo "unknown")
+        OS_VERSION_MAJOR=$(echo "$OS_VERSION" | cut -d. -f1)
     elif [[ -f /etc/os-release ]]; then
         . /etc/os-release
         DISTRO="$ID"
+        OS_VERSION="${VERSION_ID:-unknown}"
+        OS_VERSION_MAJOR=$(echo "$OS_VERSION" | cut -d. -f1)
+        OS_NAME="${PRETTY_NAME:-$ID}"
     elif [[ -f /etc/redhat-release ]]; then
         DISTRO="rhel"
+        OS_VERSION=$(grep -oE '[0-9]+\.[0-9]+' /etc/redhat-release | head -1)
+        OS_VERSION_MAJOR=$(echo "$OS_VERSION" | cut -d. -f1)
+        OS_NAME=$(cat /etc/redhat-release)
     elif [[ -f /etc/debian_version ]]; then
         DISTRO="debian"
+        OS_VERSION=$(cat /etc/debian_version)
+        OS_VERSION_MAJOR=$(echo "$OS_VERSION" | cut -d. -f1)
+        OS_NAME="Debian $OS_VERSION"
     elif uname -s | grep -qi "aix"; then
         DISTRO="aix"
+        OS_VERSION=$(oslevel 2>/dev/null || echo "unknown")
+        OS_VERSION_MAJOR=$(echo "$OS_VERSION" | cut -d. -f1)
+        OS_NAME="AIX $OS_VERSION"
     elif uname -s | grep -qi "hp-ux"; then
         DISTRO="hpux"
+        OS_VERSION=$(uname -r)
+        OS_VERSION_MAJOR=$(echo "$OS_VERSION" | cut -d. -f2)
+        OS_NAME="HP-UX $OS_VERSION"
     else
         DISTRO="unknown"
+        OS_VERSION="unknown"
+        OS_VERSION_MAJOR="0"
+        OS_NAME="Unknown"
     fi
     
-    # Determine package manager
+    # Determine package manager based on distro and version
     case "$DISTRO" in
         macos)
             PACKAGE_MANAGER="brew"
             ;;
-        ubuntu|debian)
+        ubuntu|debian|linuxmint|pop)
             PACKAGE_MANAGER="apt-get"
             ;;
-        rhel|centos|fedora|amzn|rocky|alma)
-            if command -v dnf >/dev/null 2>&1; then
+        rhel|centos|rocky|alma|ol)
+            # RHEL 8+ and derivatives use dnf
+            if [[ -n "$OS_VERSION_MAJOR" ]] && (( OS_VERSION_MAJOR >= 8 )); then
+                PACKAGE_MANAGER="dnf"
+            elif command -v dnf >/dev/null 2>&1; then
                 PACKAGE_MANAGER="dnf"
             else
                 PACKAGE_MANAGER="yum"
             fi
             ;;
-        sles|opensuse*)
+        fedora)
+            # Fedora has used dnf since version 22
+            if [[ -n "$OS_VERSION_MAJOR" ]] && (( OS_VERSION_MAJOR >= 22 )); then
+                PACKAGE_MANAGER="dnf"
+            elif command -v dnf >/dev/null 2>&1; then
+                PACKAGE_MANAGER="dnf"
+            else
+                PACKAGE_MANAGER="yum"
+            fi
+            ;;
+        amzn)
+            # Amazon Linux 2023+ uses dnf, Amazon Linux 2 uses yum
+            if [[ -n "$OS_VERSION_MAJOR" ]] && (( OS_VERSION_MAJOR >= 2023 )); then
+                PACKAGE_MANAGER="dnf"
+            elif command -v dnf >/dev/null 2>&1; then
+                PACKAGE_MANAGER="dnf"
+            else
+                PACKAGE_MANAGER="yum"
+            fi
+            ;;
+        sles|opensuse*|opensuse-leap|opensuse-tumbleweed)
             PACKAGE_MANAGER="zypper"
             ;;
+        arch|manjaro)
+            PACKAGE_MANAGER="pacman"
+            ;;
+        alpine)
+            PACKAGE_MANAGER="apk"
+            ;;
         aix)
-            PACKAGE_MANAGER="aix"
+            # AIX can use yum (via AIX Toolbox) or rpm
+            if command -v yum >/dev/null 2>&1; then
+                PACKAGE_MANAGER="yum"
+            elif command -v rpm >/dev/null 2>&1; then
+                PACKAGE_MANAGER="rpm"
+            else
+                PACKAGE_MANAGER="installp"
+            fi
             ;;
         hpux)
-            PACKAGE_MANAGER="hpux"
+            PACKAGE_MANAGER="swinstall"
             ;;
         *)
-            PACKAGE_MANAGER="unknown"
+            # Try to detect package manager if distro unknown
+            if command -v apt-get >/dev/null 2>&1; then
+                PACKAGE_MANAGER="apt-get"
+            elif command -v dnf >/dev/null 2>&1; then
+                PACKAGE_MANAGER="dnf"
+            elif command -v yum >/dev/null 2>&1; then
+                PACKAGE_MANAGER="yum"
+            elif command -v zypper >/dev/null 2>&1; then
+                PACKAGE_MANAGER="zypper"
+            elif command -v pacman >/dev/null 2>&1; then
+                PACKAGE_MANAGER="pacman"
+            elif command -v apk >/dev/null 2>&1; then
+                PACKAGE_MANAGER="apk"
+            else
+                PACKAGE_MANAGER="unknown"
+            fi
             ;;
     esac
 }
@@ -206,6 +277,18 @@ install_package() {
                 return 0
             fi
             ;;
+        pacman)
+            if pacman -S --noconfirm "$package" >/dev/null 2>&1; then
+                log_success "${package} installed successfully"
+                return 0
+            fi
+            ;;
+        apk)
+            if apk add --no-cache "$package" >/dev/null 2>&1; then
+                log_success "${package} installed successfully"
+                return 0
+            fi
+            ;;
         aix)
             log_warning "AIX detected - please install ${package} manually from AIX Toolbox"
             MISSING_PACKAGES+=("$package")
@@ -228,60 +311,219 @@ install_package() {
     return 1
 }
 
-check_and_install_dependencies() {
-    log_info "Checking required utilities..."
+# Get the correct package name for a tool based on distro
+get_package_name() {
+    local tool="$1"
+    local pkg=""
     
-    local required_commands=()
-    local package_map=()
-    
-    # Define required commands and their packages per distro
-    case "$DISTRO" in
-        ubuntu|debian)
-            required_commands=("mpstat" "iostat" "vmstat" "netstat" "bc")
-            package_map=("sysstat" "sysstat" "procps" "net-tools" "bc")
+    case "$tool" in
+        # Basic performance tools
+        mpstat|iostat|sar)
+            case "$DISTRO" in
+                ubuntu|debian|linuxmint|pop) pkg="sysstat" ;;
+                rhel|centos|fedora|amzn|rocky|alma|ol) pkg="sysstat" ;;
+                sles|opensuse*) pkg="sysstat" ;;
+                arch|manjaro) pkg="sysstat" ;;
+                alpine) pkg="sysstat" ;;
+                *) pkg="sysstat" ;;
+            esac
             ;;
-        rhel|centos|fedora|amzn|rocky|alma)
-            required_commands=("mpstat" "iostat" "vmstat" "netstat" "bc")
-            package_map=("sysstat" "sysstat" "procps-ng" "net-tools" "bc")
+        vmstat)
+            case "$DISTRO" in
+                ubuntu|debian|linuxmint|pop) pkg="procps" ;;
+                rhel|centos|fedora|amzn|rocky|alma|ol) pkg="procps-ng" ;;
+                sles|opensuse*) pkg="procps" ;;
+                arch|manjaro) pkg="procps-ng" ;;
+                alpine) pkg="procps" ;;
+                *) pkg="procps" ;;
+            esac
             ;;
-        aix)
-            required_commands=("vmstat" "iostat" "netstat")
-            package_map=("base" "base" "base")
+        netstat)
+            case "$DISTRO" in
+                ubuntu|debian|linuxmint|pop) pkg="net-tools" ;;
+                rhel|centos|fedora|amzn|rocky|alma|ol) pkg="net-tools" ;;
+                sles|opensuse*) pkg="net-tools" ;;
+                arch|manjaro) pkg="net-tools" ;;
+                alpine) pkg="net-tools" ;;
+                *) pkg="net-tools" ;;
+            esac
             ;;
-        hpux)
-            required_commands=("vmstat" "iostat" "netstat")
-            package_map=("base" "base" "base")
+        bc)
+            pkg="bc"
+            ;;
+        # Storage profiling tools
+        smartctl)
+            case "$DISTRO" in
+                ubuntu|debian|linuxmint|pop) pkg="smartmontools" ;;
+                rhel|centos|fedora|amzn|rocky|alma|ol) pkg="smartmontools" ;;
+                sles|opensuse*) pkg="smartmontools" ;;
+                arch|manjaro) pkg="smartmontools" ;;
+                alpine) pkg="smartmontools" ;;
+                *) pkg="smartmontools" ;;
+            esac
+            ;;
+        nvme)
+            case "$DISTRO" in
+                ubuntu|debian|linuxmint|pop) pkg="nvme-cli" ;;
+                rhel|centos|fedora|amzn|rocky|alma|ol) pkg="nvme-cli" ;;
+                sles|opensuse*) pkg="nvme-cli" ;;
+                arch|manjaro) pkg="nvme-cli" ;;
+                alpine) pkg="nvme-cli" ;;
+                *) pkg="nvme-cli" ;;
+            esac
+            ;;
+        lsblk|blkid)
+            case "$DISTRO" in
+                ubuntu|debian|linuxmint|pop) pkg="util-linux" ;;
+                rhel|centos|fedora|amzn|rocky|alma|ol) pkg="util-linux" ;;
+                sles|opensuse*) pkg="util-linux" ;;
+                arch|manjaro) pkg="util-linux" ;;
+                alpine) pkg="util-linux" ;;
+                *) pkg="util-linux" ;;
+            esac
+            ;;
+        pvs|vgs|lvs)
+            case "$DISTRO" in
+                ubuntu|debian|linuxmint|pop) pkg="lvm2" ;;
+                rhel|centos|fedora|amzn|rocky|alma|ol) pkg="lvm2" ;;
+                sles|opensuse*) pkg="lvm2" ;;
+                arch|manjaro) pkg="lvm2" ;;
+                alpine) pkg="lvm2" ;;
+                *) pkg="lvm2" ;;
+            esac
+            ;;
+        mdadm)
+            case "$DISTRO" in
+                ubuntu|debian|linuxmint|pop) pkg="mdadm" ;;
+                rhel|centos|fedora|amzn|rocky|alma|ol) pkg="mdadm" ;;
+                sles|opensuse*) pkg="mdadm" ;;
+                arch|manjaro) pkg="mdadm" ;;
+                alpine) pkg="mdadm" ;;
+                *) pkg="mdadm" ;;
+            esac
+            ;;
+        iscsiadm)
+            case "$DISTRO" in
+                ubuntu|debian|linuxmint|pop) pkg="open-iscsi" ;;
+                rhel|centos|fedora|amzn|rocky|alma|ol) pkg="iscsi-initiator-utils" ;;
+                sles|opensuse*) pkg="open-iscsi" ;;
+                arch|manjaro) pkg="open-iscsi" ;;
+                alpine) pkg="open-iscsi" ;;
+                *) pkg="open-iscsi" ;;
+            esac
+            ;;
+        multipath)
+            case "$DISTRO" in
+                ubuntu|debian|linuxmint|pop) pkg="multipath-tools" ;;
+                rhel|centos|fedora|amzn|rocky|alma|ol) pkg="device-mapper-multipath" ;;
+                sles|opensuse*) pkg="multipath-tools" ;;
+                arch|manjaro) pkg="multipath-tools" ;;
+                *) pkg="multipath-tools" ;;
+            esac
+            ;;
+        fio)
+            pkg="fio"
+            ;;
+        iotop)
+            case "$DISTRO" in
+                ubuntu|debian|linuxmint|pop) pkg="iotop" ;;
+                rhel|centos|fedora|amzn|rocky|alma|ol) pkg="iotop" ;;
+                sles|opensuse*) pkg="iotop" ;;
+                arch|manjaro) pkg="iotop" ;;
+                alpine) pkg="iotop" ;;
+                *) pkg="iotop" ;;
+            esac
+            ;;
+        e4defrag)
+            case "$DISTRO" in
+                ubuntu|debian|linuxmint|pop) pkg="e2fsprogs" ;;
+                rhel|centos|fedora|amzn|rocky|alma|ol) pkg="e2fsprogs" ;;
+                *) pkg="e2fsprogs" ;;
+            esac
+            ;;
+        xfs_db)
+            case "$DISTRO" in
+                ubuntu|debian|linuxmint|pop) pkg="xfsprogs" ;;
+                rhel|centos|fedora|amzn|rocky|alma|ol) pkg="xfsprogs" ;;
+                *) pkg="xfsprogs" ;;
+            esac
             ;;
         *)
-            log_warning "Unknown distribution - will attempt to use available tools"
-            return
+            pkg="$tool"
             ;;
     esac
     
+    echo "$pkg"
+}
+
+# Check if a tool exists, if not try to install it
+ensure_tool() {
+    local tool="$1"
+    local optional="${2:-false}"
+    
+    if command -v "$tool" >/dev/null 2>&1; then
+        return 0
+    fi
+    
+    local pkg=$(get_package_name "$tool")
+    
+    if [[ "$optional" == "true" ]]; then
+        log_info "Optional tool '$tool' not found, attempting to install ($pkg)..."
+    else
+        log_warning "Required tool '$tool' not found, attempting to install ($pkg)..."
+    fi
+    
+    if install_package "$pkg"; then
+        # Verify the tool is now available
+        if command -v "$tool" >/dev/null 2>&1; then
+            return 0
+        else
+            log_warning "Package installed but '$tool' still not available"
+            return 1
+        fi
+    else
+        return 1
+    fi
+}
+
+check_and_install_dependencies() {
+    log_info "Checking required utilities for ${OS_NAME:-$DISTRO}..."
+    
+    # Core performance monitoring tools
+    local core_tools=("mpstat" "iostat" "vmstat" "netstat" "bc")
+    
+    # Check and install core tools
     local missing=false
-    for i in "${!required_commands[@]}"; do
-        local cmd="${required_commands[$i]}"
-        local pkg="${package_map[$i]}"
-        
-        if ! command -v "$cmd" >/dev/null 2>&1; then
-            log_warning "${cmd} not found"
+    for tool in "${core_tools[@]}"; do
+        if ! command -v "$tool" >/dev/null 2>&1; then
+            log_warning "${tool} not found"
             
-            if [[ "$pkg" != "base" ]]; then
+            local pkg=$(get_package_name "$tool")
+            if [[ "$pkg" != "base" ]] && [[ -n "$pkg" ]]; then
                 if install_package "$pkg"; then
                     # Verify installation
-                    if ! command -v "$cmd" >/dev/null 2>&1; then
-                        log_warning "${cmd} still not available after package installation"
+                    if ! command -v "$tool" >/dev/null 2>&1; then
+                        log_warning "${tool} still not available after installing $pkg"
                         missing=true
+                    else
+                        log_success "${tool} is now available"
                     fi
                 else
                     missing=true
                 fi
             else
-                log_warning "${cmd} should be part of base system but is missing"
+                log_warning "${tool} should be part of base system but is missing"
                 missing=true
             fi
         fi
     done
+    
+    # Check for modern alternatives (ss instead of netstat, ip instead of ifconfig)
+    if ! command -v netstat >/dev/null 2>&1; then
+        if command -v ss >/dev/null 2>&1; then
+            log_info "Using 'ss' as alternative to netstat"
+        fi
+    fi
     
     if [[ "$missing" == true ]]; then
         log_warning "Some utilities are missing - diagnostics will be limited"
@@ -293,6 +535,33 @@ check_and_install_dependencies() {
     else
         log_success "All required utilities are available"
     fi
+    
+    # Show OS-specific notes
+    echo "" | tee -a "$OUTPUT_FILE"
+    case "$DISTRO" in
+        ubuntu|debian|linuxmint|pop)
+            if [[ -n "$OS_VERSION_MAJOR" ]] && (( OS_VERSION_MAJOR >= 22 )); then
+                log_info "Note: Ubuntu 22.04+ uses systemd-resolved for DNS"
+            fi
+            ;;
+        rhel|centos|rocky|alma|ol)
+            if [[ -n "$OS_VERSION_MAJOR" ]] && (( OS_VERSION_MAJOR >= 8 )); then
+                log_info "Note: RHEL 8+ uses nftables instead of iptables by default"
+            fi
+            ;;
+        fedora)
+            if [[ -n "$OS_VERSION_MAJOR" ]] && (( OS_VERSION_MAJOR >= 33 )); then
+                log_info "Note: Fedora 33+ uses btrfs as default filesystem"
+            fi
+            ;;
+        amzn)
+            if [[ "$OS_VERSION" == "2" ]]; then
+                log_info "Note: Amazon Linux 2 (based on RHEL 7)"
+            elif [[ -n "$OS_VERSION_MAJOR" ]] && (( OS_VERSION_MAJOR >= 2023 )); then
+                log_info "Note: Amazon Linux 2023 (based on Fedora)"
+            fi
+            ;;
+    esac
 }
 
 #############################################################################
@@ -760,6 +1029,679 @@ analyze_disk() {
     fi
     
     log_success "Disk forensics completed"
+}
+
+#############################################################################
+# Storage Profiling
+#############################################################################
+
+analyze_storage_profile() {
+    print_header "STORAGE PROFILING"
+    
+    log_info "Performing comprehensive storage analysis..."
+    log_info "OS: ${OS_NAME:-$DISTRO} (Version: ${OS_VERSION:-unknown})"
+    
+    # ==========================================================================
+    # ENSURE STORAGE TOOLS ARE AVAILABLE
+    # ==========================================================================
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "--- CHECKING STORAGE TOOLS ---" | tee -a "$OUTPUT_FILE"
+    
+    # Core tools (try to install if missing)
+    ensure_tool "lsblk" "false" || true
+    ensure_tool "smartctl" "true" || true
+    ensure_tool "nvme" "true" || true
+    
+    # LVM tools (only if LVM appears to be in use)
+    if [[ -d /dev/mapper ]] || [[ -e /etc/lvm/lvm.conf ]]; then
+        ensure_tool "pvs" "true" || true
+    fi
+    
+    # RAID tools (only if RAID appears to be in use)
+    if [[ -f /proc/mdstat ]] && grep -q "^md" /proc/mdstat 2>/dev/null; then
+        ensure_tool "mdadm" "true" || true
+    fi
+    
+    # iSCSI tools (only if iSCSI appears configured)
+    if [[ -d /etc/iscsi ]] || [[ -f /etc/iscsi/initiatorname.iscsi ]]; then
+        ensure_tool "iscsiadm" "true" || true
+    fi
+    
+    # Multipath tools (only if multipath appears configured)
+    if [[ -f /etc/multipath.conf ]] || [[ -d /etc/multipath ]]; then
+        ensure_tool "multipath" "true" || true
+    fi
+    
+    # Performance testing tools (optional)
+    if [[ "$MODE" == "deep" ]] || [[ "$MODE" == "disk" ]]; then
+        ensure_tool "fio" "true" || true
+    fi
+    
+    # ==========================================================================
+    # STORAGE TOPOLOGY
+    # ==========================================================================
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "--- STORAGE TOPOLOGY ---" | tee -a "$OUTPUT_FILE"
+    
+    # Block device listing with detailed info
+    if command -v lsblk >/dev/null 2>&1; then
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Block Devices:" | tee -a "$OUTPUT_FILE"
+        lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,MODEL,SERIAL,ROTA,DISC-GRAN 2>/dev/null | tee -a "$OUTPUT_FILE" || \
+        lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT 2>/dev/null | tee -a "$OUTPUT_FILE"
+    fi
+    
+    # ==========================================================================
+    # PARTITION SCHEME ANALYSIS (GPT vs MBR vs Unknown)
+    # ==========================================================================
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "--- PARTITION SCHEME ANALYSIS ---" | tee -a "$OUTPUT_FILE"
+    
+    local gpt_count=0
+    local mbr_count=0
+    local unknown_count=0
+    
+    for disk in /sys/block/sd* /sys/block/nvme* /sys/block/vd* /sys/block/xvd*; do
+        [[ -d "$disk" ]] || continue
+        local disk_name=$(basename "$disk")
+        local disk_dev="/dev/$disk_name"
+        
+        [[ -b "$disk_dev" ]] || continue
+        
+        # Get partition table type
+        local pttype=""
+        if command -v blkid >/dev/null 2>&1; then
+            pttype=$(blkid -o value -s PTTYPE "$disk_dev" 2>/dev/null)
+        fi
+        
+        # Fallback to fdisk if blkid doesn't work
+        if [[ -z "$pttype" ]] && command -v fdisk >/dev/null 2>&1; then
+            if fdisk -l "$disk_dev" 2>/dev/null | grep -q "GPT"; then
+                pttype="gpt"
+            elif fdisk -l "$disk_dev" 2>/dev/null | grep -q "DOS"; then
+                pttype="dos"
+            fi
+        fi
+        
+        # Get disk size
+        local size_bytes=$(cat "$disk/size" 2>/dev/null)
+        local size_gb=$((size_bytes * 512 / 1024 / 1024 / 1024))
+        
+        # Determine partition scheme
+        local scheme_name=""
+        case "$pttype" in
+            gpt)
+                scheme_name="GPT"
+                ((gpt_count++))
+                ;;
+            dos|msdos)
+                scheme_name="MBR (msdos)"
+                ((mbr_count++))
+                
+                # Warn if MBR on >2TB disk
+                if (( size_gb > 2000 )); then
+                    log_bottleneck "Storage" "MBR partition on >2TB disk $disk_dev (data loss risk)" "MBR on ${size_gb}GB" "GPT" "High"
+                fi
+                ;;
+            *)
+                scheme_name="Unknown/Unpartitioned"
+                ((unknown_count++))
+                ;;
+        esac
+        
+        echo "  $disk_dev: ${size_gb}GB - $scheme_name" | tee -a "$OUTPUT_FILE"
+    done
+    
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "Partition Scheme Summary:" | tee -a "$OUTPUT_FILE"
+    echo "  GPT Disks: $gpt_count (modern, UEFI compatible, >2TB support)" | tee -a "$OUTPUT_FILE"
+    echo "  MBR Disks: $mbr_count (legacy, BIOS, 2TB max per partition)" | tee -a "$OUTPUT_FILE"
+    if (( unknown_count > 0 )); then
+        echo "  Unknown/Raw: $unknown_count (unpartitioned or unrecognized)" | tee -a "$OUTPUT_FILE"
+    fi
+    
+    # ==========================================================================
+    # BOOT MODE (UEFI vs BIOS)
+    # ==========================================================================
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "Boot Configuration:" | tee -a "$OUTPUT_FILE"
+    
+    if [[ -d /sys/firmware/efi ]]; then
+        echo "  Firmware: UEFI" | tee -a "$OUTPUT_FILE"
+        
+        # Check Secure Boot status
+        if [[ -f /sys/firmware/efi/efivars/SecureBoot-* ]] 2>/dev/null; then
+            local secureboot=$(od -An -t u1 /sys/firmware/efi/efivars/SecureBoot-* 2>/dev/null | awk '{print $NF}')
+            if [[ "$secureboot" == "1" ]]; then
+                echo "  Secure Boot: Enabled" | tee -a "$OUTPUT_FILE"
+            else
+                echo "  Secure Boot: Disabled" | tee -a "$OUTPUT_FILE"
+            fi
+        elif command -v mokutil >/dev/null 2>&1; then
+            local sb_state=$(mokutil --sb-state 2>/dev/null)
+            echo "  Secure Boot: $sb_state" | tee -a "$OUTPUT_FILE"
+        fi
+    else
+        echo "  Firmware: Legacy BIOS" | tee -a "$OUTPUT_FILE"
+    fi
+    
+    # ==========================================================================
+    # PARTITION TYPES
+    # ==========================================================================
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "Partition Types:" | tee -a "$OUTPUT_FILE"
+    
+    if command -v lsblk >/dev/null 2>&1; then
+        # Get partition types using lsblk
+        lsblk -o NAME,PARTTYPE,PARTLABEL,FSTYPE,SIZE,MOUNTPOINT 2>/dev/null | head -30 | tee -a "$OUTPUT_FILE"
+    fi
+    
+    # Identify special partition types
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "Special Partitions Detected:" | tee -a "$OUTPUT_FILE"
+    
+    # EFI System Partition
+    local efi_part=$(lsblk -o NAME,PARTTYPE 2>/dev/null | grep -i "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" | awk '{print $1}')
+    if [[ -n "$efi_part" ]]; then
+        echo "  EFI System Partition (ESP): /dev/$efi_part" | tee -a "$OUTPUT_FILE"
+    elif [[ -d /boot/efi ]]; then
+        local efi_mount=$(findmnt -n -o SOURCE /boot/efi 2>/dev/null)
+        [[ -n "$efi_mount" ]] && echo "  EFI System Partition: $efi_mount (mounted at /boot/efi)" | tee -a "$OUTPUT_FILE"
+    fi
+    
+    # BIOS Boot Partition (for GPT + BIOS)
+    local bios_boot=$(lsblk -o NAME,PARTTYPE 2>/dev/null | grep -i "21686148-6449-6e6f-744e-656564454649" | awk '{print $1}')
+    [[ -n "$bios_boot" ]] && echo "  BIOS Boot Partition: /dev/$bios_boot" | tee -a "$OUTPUT_FILE"
+    
+    # Linux swap
+    local swap_parts=$(lsblk -o NAME,FSTYPE 2>/dev/null | grep -E "swap" | awk '{print $1}')
+    [[ -n "$swap_parts" ]] && echo "  Swap Partition(s): $swap_parts" | tee -a "$OUTPUT_FILE"
+    
+    # LVM Physical Volumes
+    local lvm_parts=$(lsblk -o NAME,FSTYPE 2>/dev/null | grep -E "LVM2_member" | awk '{print $1}')
+    [[ -n "$lvm_parts" ]] && echo "  LVM Physical Volume(s): $lvm_parts" | tee -a "$OUTPUT_FILE"
+    
+    # RAID members
+    local raid_parts=$(lsblk -o NAME,FSTYPE 2>/dev/null | grep -E "linux_raid" | awk '{print $1}')
+    [[ -n "$raid_parts" ]] && echo "  RAID Member(s): $raid_parts" | tee -a "$OUTPUT_FILE"
+    
+    # ==========================================================================
+    # FILESYSTEM TYPES
+    # ==========================================================================
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "Filesystem Types in Use:" | tee -a "$OUTPUT_FILE"
+    
+    # Count filesystem types
+    if command -v lsblk >/dev/null 2>&1; then
+        lsblk -o FSTYPE -n 2>/dev/null | grep -v "^$" | sort | uniq -c | while read count fstype; do
+            case "$fstype" in
+                ext4)
+                    echo "  ext4: $count volume(s) - Linux standard, journaling" | tee -a "$OUTPUT_FILE"
+                    ;;
+                xfs)
+                    echo "  XFS: $count volume(s) - High-performance, scalable (RHEL default)" | tee -a "$OUTPUT_FILE"
+                    ;;
+                btrfs)
+                    echo "  Btrfs: $count volume(s) - Copy-on-write, snapshots, checksums" | tee -a "$OUTPUT_FILE"
+                    ;;
+                ext3)
+                    echo "  ext3: $count volume(s) - Legacy journaling filesystem" | tee -a "$OUTPUT_FILE"
+                    ;;
+                ext2)
+                    echo "  ext2: $count volume(s) - Legacy (no journal) - often used for /boot" | tee -a "$OUTPUT_FILE"
+                    ;;
+                vfat|fat32)
+                    echo "  FAT32/vfat: $count volume(s) - EFI System Partition or removable media" | tee -a "$OUTPUT_FILE"
+                    ;;
+                ntfs)
+                    echo "  NTFS: $count volume(s) - Windows filesystem" | tee -a "$OUTPUT_FILE"
+                    ;;
+                swap)
+                    echo "  swap: $count volume(s) - Linux swap space" | tee -a "$OUTPUT_FILE"
+                    ;;
+                zfs_member)
+                    echo "  ZFS: $count volume(s) - Advanced filesystem with built-in RAID" | tee -a "$OUTPUT_FILE"
+                    ;;
+                LVM2_member)
+                    echo "  LVM: $count physical volume(s)" | tee -a "$OUTPUT_FILE"
+                    ;;
+                linux_raid_member)
+                    echo "  MD RAID: $count member(s)" | tee -a "$OUTPUT_FILE"
+                    ;;
+                *)
+                    [[ -n "$fstype" ]] && echo "  $fstype: $count volume(s)" | tee -a "$OUTPUT_FILE"
+                    ;;
+            esac
+        done
+    fi
+    
+    # Check for newer filesystems
+    if mount | grep -q "bcachefs"; then
+        echo "  bcachefs: Detected - Next-gen copy-on-write filesystem" | tee -a "$OUTPUT_FILE"
+    fi
+    
+    # LVM Detection and Analysis
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "LVM Configuration:" | tee -a "$OUTPUT_FILE"
+    if command -v pvs >/dev/null 2>&1; then
+        local pv_count=$(pvs --noheadings 2>/dev/null | wc -l)
+        if (( pv_count > 0 )); then
+            echo "  Physical Volumes:" | tee -a "$OUTPUT_FILE"
+            pvs 2>/dev/null | tee -a "$OUTPUT_FILE"
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "  Volume Groups:" | tee -a "$OUTPUT_FILE"
+            vgs 2>/dev/null | tee -a "$OUTPUT_FILE"
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "  Logical Volumes:" | tee -a "$OUTPUT_FILE"
+            lvs 2>/dev/null | tee -a "$OUTPUT_FILE"
+        else
+            echo "  No LVM configuration detected" | tee -a "$OUTPUT_FILE"
+        fi
+    else
+        echo "  LVM tools not installed" | tee -a "$OUTPUT_FILE"
+    fi
+    
+    # RAID Detection (mdadm)
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "Software RAID (mdadm):" | tee -a "$OUTPUT_FILE"
+    if [[ -f /proc/mdstat ]]; then
+        cat /proc/mdstat | tee -a "$OUTPUT_FILE"
+        
+        # Check for degraded arrays
+        if grep -q "degraded" /proc/mdstat 2>/dev/null || grep -q "_" /proc/mdstat 2>/dev/null; then
+            log_bottleneck "Storage" "Degraded RAID array detected" "Degraded" "Healthy" "Critical"
+        fi
+    else
+        echo "  No software RAID detected" | tee -a "$OUTPUT_FILE"
+    fi
+    
+    # Hardware RAID detection
+    if command -v megacli >/dev/null 2>&1; then
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Hardware RAID (MegaRAID):" | tee -a "$OUTPUT_FILE"
+        megacli -LDInfo -Lall -aALL 2>/dev/null | tee -a "$OUTPUT_FILE"
+    fi
+    
+    if command -v ssacli >/dev/null 2>&1; then
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Hardware RAID (HP Smart Array):" | tee -a "$OUTPUT_FILE"
+        ssacli ctrl all show config 2>/dev/null | tee -a "$OUTPUT_FILE"
+    fi
+    
+    # ==========================================================================
+    # STORAGE TIERING (SSD vs HDD vs NVMe)
+    # ==========================================================================
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "--- STORAGE TIERING ---" | tee -a "$OUTPUT_FILE"
+    
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "Drive Types:" | tee -a "$OUTPUT_FILE"
+    
+    local ssd_count=0
+    local hdd_count=0
+    local nvme_count=0
+    
+    for disk in /sys/block/*/; do
+        local disk_name=$(basename "$disk")
+        [[ "$disk_name" == loop* ]] && continue
+        [[ "$disk_name" == ram* ]] && continue
+        [[ "$disk_name" == dm-* ]] && continue
+        
+        local rotational_file="${disk}queue/rotational"
+        local model_file="${disk}device/model"
+        local size_file="${disk}size"
+        
+        if [[ -f "$rotational_file" ]]; then
+            local is_rotational=$(cat "$rotational_file")
+            local model="Unknown"
+            local size_sectors=0
+            local size_gb=0
+            
+            [[ -f "$model_file" ]] && model=$(cat "$model_file" | xargs)
+            [[ -f "$size_file" ]] && size_sectors=$(cat "$size_file") && size_gb=$((size_sectors * 512 / 1024 / 1024 / 1024))
+            
+            if [[ "$disk_name" == nvme* ]]; then
+                echo "  $disk_name: NVMe SSD - ${size_gb}GB - $model" | tee -a "$OUTPUT_FILE"
+                ((nvme_count++))
+            elif [[ "$is_rotational" == "0" ]]; then
+                echo "  $disk_name: SSD - ${size_gb}GB - $model" | tee -a "$OUTPUT_FILE"
+                ((ssd_count++))
+            else
+                echo "  $disk_name: HDD (Rotational) - ${size_gb}GB - $model" | tee -a "$OUTPUT_FILE"
+                ((hdd_count++))
+            fi
+        fi
+    done
+    
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "Storage Tier Summary: NVMe=$nvme_count, SSD=$ssd_count, HDD=$hdd_count" | tee -a "$OUTPUT_FILE"
+    
+    # NVMe specific info
+    if command -v nvme >/dev/null 2>&1 && (( nvme_count > 0 )); then
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "NVMe Device Details:" | tee -a "$OUTPUT_FILE"
+        nvme list 2>/dev/null | tee -a "$OUTPUT_FILE"
+    fi
+    
+    # ==========================================================================
+    # AWS EBS / CLOUD STORAGE DETECTION
+    # ==========================================================================
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "--- CLOUD STORAGE DETECTION ---" | tee -a "$OUTPUT_FILE"
+    
+    # Check if running on EC2
+    if curl -s -m 2 http://169.254.169.254/latest/meta-data/instance-id &>/dev/null; then
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "AWS EC2 Instance Detected - Analyzing EBS Volumes:" | tee -a "$OUTPUT_FILE"
+        
+        # Get instance ID
+        local instance_id=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+        local region=$(curl -s http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null || \
+                       curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone | sed 's/[a-z]$//')
+        
+        echo "  Instance ID: $instance_id" | tee -a "$OUTPUT_FILE"
+        echo "  Region: $region" | tee -a "$OUTPUT_FILE"
+        
+        # Try to get EBS volume info via AWS CLI
+        if command -v aws >/dev/null 2>&1; then
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "  EBS Volumes (via AWS CLI):" | tee -a "$OUTPUT_FILE"
+            
+            local volumes=$(aws ec2 describe-volumes --filters "Name=attachment.instance-id,Values=$instance_id" \
+                --query 'Volumes[*].{ID:VolumeId,Type:VolumeType,Size:Size,IOPS:Iops,Throughput:Throughput,State:State,Device:Attachments[0].Device}' \
+                --output table --region "$region" 2>/dev/null)
+            
+            if [[ -n "$volumes" ]]; then
+                echo "$volumes" | tee -a "$OUTPUT_FILE"
+                
+                # Check for optimization opportunities
+                echo "" | tee -a "$OUTPUT_FILE"
+                echo "  EBS Optimization Analysis:" | tee -a "$OUTPUT_FILE"
+                
+                # Check for gp2 volumes (could upgrade to gp3)
+                local gp2_count=$(aws ec2 describe-volumes --filters "Name=attachment.instance-id,Values=$instance_id" \
+                    --query 'length(Volumes[?VolumeType==`gp2`])' --output text --region "$region" 2>/dev/null)
+                
+                if [[ "$gp2_count" -gt 0 ]]; then
+                    echo "    - Found $gp2_count gp2 volume(s) - consider upgrading to gp3 for cost savings" | tee -a "$OUTPUT_FILE"
+                    log_bottleneck "Storage" "gp2 volumes detected - gp3 recommended" "$gp2_count gp2 volumes" "gp3" "Low"
+                fi
+                
+                # Check for io1 volumes (could upgrade to io2)
+                local io1_count=$(aws ec2 describe-volumes --filters "Name=attachment.instance-id,Values=$instance_id" \
+                    --query 'length(Volumes[?VolumeType==`io1`])' --output text --region "$region" 2>/dev/null)
+                
+                if [[ "$io1_count" -gt 0 ]]; then
+                    echo "    - Found $io1_count io1 volume(s) - consider upgrading to io2 for better durability" | tee -a "$OUTPUT_FILE"
+                fi
+                
+                # Check EBS-optimized instance
+                local ebs_optimized=$(curl -s http://169.254.169.254/latest/meta-data/ebs-optimized 2>/dev/null || echo "unknown")
+                echo "    - EBS Optimized: $ebs_optimized" | tee -a "$OUTPUT_FILE"
+                
+            else
+                echo "  Unable to query EBS volumes (check IAM permissions)" | tee -a "$OUTPUT_FILE"
+            fi
+        else
+            echo "  AWS CLI not available for detailed EBS analysis" | tee -a "$OUTPUT_FILE"
+        fi
+        
+        # NVMe EBS mapping (for Nitro instances)
+        if [[ -d /dev/disk/by-id ]]; then
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "  NVMe to EBS Mapping:" | tee -a "$OUTPUT_FILE"
+            ls -la /dev/disk/by-id/ 2>/dev/null | grep -E "nvme-Amazon" | tee -a "$OUTPUT_FILE" || echo "    No NVMe EBS mappings found" | tee -a "$OUTPUT_FILE"
+        fi
+        
+        # Instance store detection
+        local instance_store=$(curl -s http://169.254.169.254/latest/meta-data/block-device-mapping/ 2>/dev/null | grep ephemeral)
+        if [[ -n "$instance_store" ]]; then
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "  Instance Store (Ephemeral) Volumes:" | tee -a "$OUTPUT_FILE"
+            echo "$instance_store" | tee -a "$OUTPUT_FILE"
+            echo "    WARNING: Instance store data is lost on stop/terminate" | tee -a "$OUTPUT_FILE"
+        fi
+        
+    else
+        echo "  Not running on AWS EC2" | tee -a "$OUTPUT_FILE"
+        
+        # Check for Azure
+        if curl -s -H "Metadata:true" "http://169.254.169.254/metadata/instance?api-version=2021-02-01" &>/dev/null 2>&1; then
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "Azure VM Detected:" | tee -a "$OUTPUT_FILE"
+            curl -s -H "Metadata:true" "http://169.254.169.254/metadata/instance/compute/storageProfile?api-version=2021-02-01" 2>/dev/null | tee -a "$OUTPUT_FILE"
+        fi
+        
+        # Check for GCP
+        if curl -s -H "Metadata-Flavor: Google" "http://169.254.169.254/computeMetadata/v1/instance/disks/?recursive=true" &>/dev/null 2>&1; then
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "GCP VM Detected:" | tee -a "$OUTPUT_FILE"
+            curl -s -H "Metadata-Flavor: Google" "http://169.254.169.254/computeMetadata/v1/instance/disks/?recursive=true" 2>/dev/null | tee -a "$OUTPUT_FILE"
+        fi
+    fi
+    
+    # ==========================================================================
+    # SMART HEALTH STATUS
+    # ==========================================================================
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "--- SMART HEALTH STATUS ---" | tee -a "$OUTPUT_FILE"
+    
+    if command -v smartctl >/dev/null 2>&1; then
+        for disk in /dev/sd? /dev/nvme?n1; do
+            [[ -b "$disk" ]] || continue
+            
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "SMART Status for $disk:" | tee -a "$OUTPUT_FILE"
+            
+            local smart_health=$(smartctl -H "$disk" 2>/dev/null)
+            echo "$smart_health" | grep -E "SMART overall-health|SMART Health Status" | tee -a "$OUTPUT_FILE"
+            
+            # Check for failing drive
+            if echo "$smart_health" | grep -qi "FAILED\|FAILING"; then
+                log_bottleneck "Storage" "SMART failure detected on $disk" "FAILING" "PASSED" "Critical"
+            fi
+            
+            # Key SMART attributes
+            smartctl -A "$disk" 2>/dev/null | grep -E "Reallocated_Sector|Current_Pending_Sector|Offline_Uncorrectable|UDMA_CRC_Error|Wear_Leveling|Percentage_Used" | tee -a "$OUTPUT_FILE"
+        done
+    else
+        echo "  smartctl not installed - install smartmontools for SMART analysis" | tee -a "$OUTPUT_FILE"
+        echo "  Install with: apt-get install smartmontools OR yum install smartmontools" | tee -a "$OUTPUT_FILE"
+    fi
+    
+    # ==========================================================================
+    # CAPACITY PROFILING / SPACE UTILIZATION
+    # ==========================================================================
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "--- CAPACITY PROFILING ---" | tee -a "$OUTPUT_FILE"
+    
+    # Filesystem usage with inode info
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "Filesystem Capacity:" | tee -a "$OUTPUT_FILE"
+    df -hT 2>/dev/null | grep -v tmpfs | grep -v devtmpfs | tee -a "$OUTPUT_FILE"
+    
+    # Inode usage (can cause issues even with free space)
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "Inode Usage:" | tee -a "$OUTPUT_FILE"
+    df -i 2>/dev/null | grep -v tmpfs | grep -v devtmpfs | tee -a "$OUTPUT_FILE"
+    
+    # Check for inode exhaustion
+    while IFS= read -r line; do
+        local inode_usage=$(echo "$line" | awk '{print $5}' | sed 's/%//')
+        local mount=$(echo "$line" | awk '{print $6}')
+        if [[ -n "$inode_usage" ]] && [[ "$inode_usage" =~ ^[0-9]+$ ]] && (( inode_usage > 90 )); then
+            log_bottleneck "Storage" "Inode exhaustion on $mount" "${inode_usage}%" "90%" "High"
+        fi
+    done < <(df -i 2>/dev/null | grep -v tmpfs | grep -v devtmpfs | tail -n +2)
+    
+    # Top space consumers
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "Top 10 Directories by Size (/):" | tee -a "$OUTPUT_FILE"
+    du -hx --max-depth=1 / 2>/dev/null | sort -rh | head -11 | tee -a "$OUTPUT_FILE"
+    
+    # Large files detection
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "Large Files (>1GB):" | tee -a "$OUTPUT_FILE"
+    find / -xdev -type f -size +1G -exec ls -lh {} \; 2>/dev/null | sort -k5 -rh | head -10 | tee -a "$OUTPUT_FILE" || echo "  Unable to scan for large files" | tee -a "$OUTPUT_FILE"
+    
+    # Old/stale files in /tmp
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "Old files in /tmp (>7 days):" | tee -a "$OUTPUT_FILE"
+    local old_tmp_size=$(find /tmp -type f -mtime +7 -exec du -ch {} + 2>/dev/null | tail -1 | awk '{print $1}')
+    echo "  Total size of old /tmp files: ${old_tmp_size:-0}" | tee -a "$OUTPUT_FILE"
+    
+    # Log file sizes
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "Log Directory Sizes:" | tee -a "$OUTPUT_FILE"
+    du -sh /var/log 2>/dev/null | tee -a "$OUTPUT_FILE"
+    du -sh /var/log/* 2>/dev/null | sort -rh | head -5 | tee -a "$OUTPUT_FILE"
+    
+    # ==========================================================================
+    # FILESYSTEM FRAGMENTATION
+    # ==========================================================================
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "--- FILESYSTEM FRAGMENTATION ---" | tee -a "$OUTPUT_FILE"
+    
+    # ext4 fragmentation
+    if command -v e4defrag >/dev/null 2>&1; then
+        for mount in $(df -t ext4 --output=target 2>/dev/null | tail -n +2); do
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "Fragmentation on $mount (ext4):" | tee -a "$OUTPUT_FILE"
+            e4defrag -c "$mount" 2>/dev/null | grep -E "Total|Fragmented|Score" | tee -a "$OUTPUT_FILE"
+        done
+    fi
+    
+    # XFS fragmentation
+    if command -v xfs_db >/dev/null 2>&1; then
+        for mount in $(df -t xfs --output=source 2>/dev/null | tail -n +2); do
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "Fragmentation on $mount (XFS):" | tee -a "$OUTPUT_FILE"
+            xfs_db -c frag -r "$mount" 2>/dev/null | tee -a "$OUTPUT_FILE"
+        done
+    fi
+    
+    # ==========================================================================
+    # SAN/NAS/iSCSI DETECTION
+    # ==========================================================================
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "--- SAN/NAS/iSCSI DETECTION ---" | tee -a "$OUTPUT_FILE"
+    
+    # iSCSI sessions
+    if command -v iscsiadm >/dev/null 2>&1; then
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "iSCSI Sessions:" | tee -a "$OUTPUT_FILE"
+        iscsiadm -m session 2>/dev/null | tee -a "$OUTPUT_FILE" || echo "  No active iSCSI sessions" | tee -a "$OUTPUT_FILE"
+    fi
+    
+    # Multipath devices (common with SAN)
+    if command -v multipath >/dev/null 2>&1; then
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Multipath Devices:" | tee -a "$OUTPUT_FILE"
+        multipath -ll 2>/dev/null | tee -a "$OUTPUT_FILE" || echo "  No multipath devices configured" | tee -a "$OUTPUT_FILE"
+    fi
+    
+    # NFS mounts
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "NFS Mounts:" | tee -a "$OUTPUT_FILE"
+    mount | grep -E "type nfs|type nfs4" | tee -a "$OUTPUT_FILE" || echo "  No NFS mounts detected" | tee -a "$OUTPUT_FILE"
+    
+    # Check NFS mount options for performance issues
+    if mount | grep -qE "type nfs|type nfs4"; then
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "NFS Mount Analysis:" | tee -a "$OUTPUT_FILE"
+        mount | grep -E "type nfs|type nfs4" | while read -r line; do
+            if echo "$line" | grep -q "sync"; then
+                echo "  WARNING: Synchronous NFS mount detected (performance impact): $line" | tee -a "$OUTPUT_FILE"
+            fi
+            if ! echo "$line" | grep -q "noatime"; then
+                echo "  TIP: Consider adding 'noatime' option for better performance" | tee -a "$OUTPUT_FILE"
+            fi
+        done
+    fi
+    
+    # CIFS/SMB mounts
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "CIFS/SMB Mounts:" | tee -a "$OUTPUT_FILE"
+    mount | grep "type cifs" | tee -a "$OUTPUT_FILE" || echo "  No CIFS/SMB mounts detected" | tee -a "$OUTPUT_FILE"
+    
+    # Fibre Channel detection
+    if [[ -d /sys/class/fc_host ]]; then
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Fibre Channel HBAs:" | tee -a "$OUTPUT_FILE"
+        for fc in /sys/class/fc_host/host*; do
+            [[ -d "$fc" ]] || continue
+            local fc_name=$(basename "$fc")
+            local port_state=$(cat "$fc/port_state" 2>/dev/null || echo "unknown")
+            local port_name=$(cat "$fc/port_name" 2>/dev/null || echo "unknown")
+            local speed=$(cat "$fc/speed" 2>/dev/null || echo "unknown")
+            echo "  $fc_name: State=$port_state, WWN=$port_name, Speed=$speed" | tee -a "$OUTPUT_FILE"
+        done
+    fi
+    
+    # ==========================================================================
+    # STORAGE PERFORMANCE BASELINE
+    # ==========================================================================
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "--- STORAGE PERFORMANCE BASELINE ---" | tee -a "$OUTPUT_FILE"
+    
+    if [[ "$MODE" == "deep" ]] || [[ "$MODE" == "disk" ]]; then
+        log_info "Running storage performance baseline tests..."
+        
+        local test_dir="/tmp/storage_baseline_$$"
+        mkdir -p "$test_dir"
+        
+        # Sequential write test (1GB)
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Sequential Write Test (1GB):" | tee -a "$OUTPUT_FILE"
+        local write_result=$(dd if=/dev/zero of="$test_dir/test_file" bs=1M count=1024 oflag=direct 2>&1)
+        local write_speed=$(echo "$write_result" | grep -oP '[\d.]+ [MGK]B/s' | tail -1)
+        echo "  Write Speed: ${write_speed:-N/A}" | tee -a "$OUTPUT_FILE"
+        
+        # Sequential read test
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Sequential Read Test (1GB):" | tee -a "$OUTPUT_FILE"
+        sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+        local read_result=$(dd if="$test_dir/test_file" of=/dev/null bs=1M 2>&1)
+        local read_speed=$(echo "$read_result" | grep -oP '[\d.]+ [MGK]B/s' | tail -1)
+        echo "  Read Speed: ${read_speed:-N/A}" | tee -a "$OUTPUT_FILE"
+        
+        # Random I/O test with fio if available
+        if command -v fio >/dev/null 2>&1; then
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "Random I/O Test (fio):" | tee -a "$OUTPUT_FILE"
+            
+            # 4K random read IOPS
+            local fio_result=$(fio --name=randread --ioengine=libaio --iodepth=32 --rw=randread --bs=4k \
+                --direct=1 --size=256M --runtime=10 --filename="$test_dir/fio_test" --output-format=json 2>/dev/null)
+            
+            if [[ -n "$fio_result" ]]; then
+                local read_iops=$(echo "$fio_result" | grep -oP '"iops"\s*:\s*[\d.]+' | head -1 | grep -oP '[\d.]+')
+                local read_lat=$(echo "$fio_result" | grep -oP '"lat_ns".*?"mean"\s*:\s*[\d.]+' | head -1 | grep -oP '[\d.]+$')
+                read_lat=$(echo "scale=2; ${read_lat:-0} / 1000000" | bc 2>/dev/null || echo "N/A")
+                echo "  4K Random Read: ${read_iops:-N/A} IOPS, ${read_lat}ms latency" | tee -a "$OUTPUT_FILE"
+            fi
+            
+            # 4K random write IOPS
+            fio_result=$(fio --name=randwrite --ioengine=libaio --iodepth=32 --rw=randwrite --bs=4k \
+                --direct=1 --size=256M --runtime=10 --filename="$test_dir/fio_test" --output-format=json 2>/dev/null)
+            
+            if [[ -n "$fio_result" ]]; then
+                local write_iops=$(echo "$fio_result" | grep -oP '"iops"\s*:\s*[\d.]+' | head -1 | grep -oP '[\d.]+')
+                local write_lat=$(echo "$fio_result" | grep -oP '"lat_ns".*?"mean"\s*:\s*[\d.]+' | head -1 | grep -oP '[\d.]+$')
+                write_lat=$(echo "scale=2; ${write_lat:-0} / 1000000" | bc 2>/dev/null || echo "N/A")
+                echo "  4K Random Write: ${write_iops:-N/A} IOPS, ${write_lat}ms latency" | tee -a "$OUTPUT_FILE"
+            fi
+        else
+            echo "  fio not installed - install for detailed I/O benchmarking" | tee -a "$OUTPUT_FILE"
+        fi
+        
+        # Cleanup
+        rm -rf "$test_dir"
+    else
+        echo "  Run with -m deep or -m disk for performance baseline tests" | tee -a "$OUTPUT_FILE"
+    fi
+    
+    log_success "Storage profiling completed"
 }
 
 #############################################################################
@@ -1585,7 +2527,8 @@ main() {
     
     show_banner
     
-    log_info "Detected OS: ${DISTRO}"
+    log_info "Detected OS: ${OS_NAME:-$DISTRO}"
+    log_info "OS Version: ${OS_VERSION:-unknown}"
     log_info "Package Manager: ${PACKAGE_MANAGER}"
     log_info "Starting forensics analysis in ${MODE} mode..."
     log_info "Output file: ${OUTPUT_FILE}"
@@ -1609,6 +2552,7 @@ main() {
             analyze_cpu
             analyze_memory
             analyze_disk
+            analyze_storage_profile
             analyze_databases
             analyze_network
             ;;
@@ -1616,11 +2560,13 @@ main() {
             analyze_cpu
             analyze_memory
             analyze_disk
+            analyze_storage_profile
             analyze_databases
             analyze_network
             ;;
         disk)
             analyze_disk
+            analyze_storage_profile
             ;;
         cpu)
             analyze_cpu

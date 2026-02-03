@@ -6,9 +6,11 @@ A comprehensive Bash-based diagnostic tool for Linux servers that automatically 
 
 **Key Features:**
 - ✅ Comprehensive performance forensics (CPU, Memory, Disk, Network, Database)
+- ✅ **Storage profiling** (topology, tiering, cloud storage, SMART health, capacity analysis, SAN/NAS detection)
 - ✅ **AWS DMS SOURCE DATABASE diagnostics** (binary logging, replication lag, CloudWatch agent, connection analysis)
 - ✅ Automated bottleneck detection
-- ✅ **Automatic dependency installation** (Debian/Ubuntu, RHEL/CentOS/Amazon Linux)
+- ✅ **Automatic dependency installation** (Debian/Ubuntu, RHEL/CentOS/Amazon Linux, SUSE, Arch, Alpine)
+- ✅ **Version-aware OS detection** (auto-selects correct tools and packages per distro version)
 - ✅ Multi-distro support with intelligent fallbacks
 - ✅ CPU forensics (load average, context switches, steal time, thread analysis)
 - ✅ Memory forensics (OOM detection, swap analysis, page faults, slab memory, leak detection)
@@ -30,22 +32,26 @@ A comprehensive Bash-based diagnostic tool for Linux servers that automatically 
 
 ### **Supported Operating Systems**
 
-**Fully Supported (Automatic Package Installation):**
-- Ubuntu 18.04+
-- Debian 9+
-- RHEL 7+, 8+, 9+
-- CentOS 7+, 8+
-- Amazon Linux 2, 2023
-- Rocky Linux 8+, 9+
-- AlmaLinux 8+, 9+
-- Fedora (recent versions)
-- SUSE Linux Enterprise Server
+**Fully Supported (Automatic Package Installation with Version Detection):**
+- Ubuntu 18.04, 20.04, 22.04, 24.04+
+- Debian 9, 10, 11, 12+
+- RHEL 7, 8, 9+ (auto-detects dnf vs yum based on version)
+- CentOS 7, 8 Stream
+- Amazon Linux 2 (yum), Amazon Linux 2023 (dnf)
+- Rocky Linux 8, 9+
+- AlmaLinux 8, 9+
+- Oracle Linux 7, 8, 9+
+- Fedora 22+ (auto-detects dnf)
+- SUSE Linux Enterprise Server 12, 15+
+- openSUSE Leap, Tumbleweed
+- Arch Linux, Manjaro (pacman)
+- Alpine Linux (apk)
 
 **Supported (Manual Package Installation):**
 - AIX 7.1+ (requires AIX Toolbox packages)
 - HP-UX 11i v3+ (requires Software Depot packages)
 
-**Note:** The script automatically detects your OS and installs missing utilities (sysstat, net-tools, bc) when possible. For AIX and HP-UX, manual installation instructions are provided.
+**Note:** The script automatically detects your OS **and version**, then selects the correct package manager and package names. For example, RHEL 8+ uses `dnf` while RHEL 7 uses `yum`, and iSCSI tools are named differently across distros (`open-iscsi` vs `iscsi-initiator-utils`).
 
 ### **Installation**
 
@@ -107,6 +113,22 @@ sudo ./invoke-linux-forensics.sh
 - Read/write performance testing (dd-based)
 - Dropped I/O detection
 - Per-device statistics
+
+**Storage Profiling:**
+- **Partition scheme analysis** (GPT vs MBR with >2TB warnings)
+- **Boot configuration detection** (UEFI vs Legacy BIOS, Secure Boot status)
+- **Partition type identification** (ESP, BIOS Boot, LVM, RAID, swap)
+- **Filesystem type detection** (ext4, XFS, Btrfs, ZFS, bcachefs, etc.)
+- Storage topology detection (block devices, partitions, LVM, software RAID)
+- Storage tiering analysis (SSD vs HDD vs NVMe identification)
+- AWS EBS volume detection and optimization recommendations (gp2→gp3, io1→io2)
+- Azure/GCP cloud storage detection
+- SMART health status monitoring (drive health, wear level, errors, power-on hours)
+- Capacity profiling (top directories by size, large file detection, inode usage)
+- Filesystem fragmentation analysis (ext4, XFS)
+- SAN/NAS/iSCSI detection (multipath, Fibre Channel HBAs, NFS/CIFS mounts)
+- Storage performance baseline testing (sequential I/O, random IOPS with fio)
+- Automatic tool installation (smartmontools, nvme-cli, lvm2, fio, etc.)
 
 **Database Forensics:**
 - Automatic detection of running databases
@@ -384,6 +406,22 @@ The tool automatically detects:
 </details>
 
 <details>
+<summary><strong>Storage Issues</strong></summary>
+
+- **MBR partition on >2TB disk** (only 2TB usable - potential data loss)
+- Degraded RAID arrays (mdadm software RAID)
+- SMART drive failures or warnings (failing/about to fail)
+- High SSD wear level (>80%)
+- High disk temperature (>60°C)
+- Inode exhaustion (>90% used)
+- Failed multipath paths (SAN connectivity)
+- AWS EBS gp2 volumes detected (recommend upgrade to gp3 for cost savings)
+- AWS EBS io1 volumes detected (recommend upgrade to io2 for better durability)
+- NFS mounts with suboptimal options (sync mode, missing noatime)
+
+</details>
+
+<details>
 <summary><strong>Database Issues</strong></summary>
 
 - High connection count (MySQL/PostgreSQL/Oracle/SQL Server: >500, MongoDB/Cassandra: >1000, Redis: >10,000)
@@ -582,6 +620,70 @@ Check the output for specific guidance based on your system.
 
 </details>
 
+<details>
+<summary><strong>Storage Profiling Tools</strong></summary>
+
+The script automatically installs storage-related tools when needed. Tools are only installed if the related subsystem is detected (e.g., LVM tools only if `/dev/mapper` exists).
+
+| Tool | Purpose | Package (Debian/Ubuntu) | Package (RHEL/CentOS) |
+|------|---------|-------------------------|----------------------|
+| smartctl | SMART health monitoring | smartmontools | smartmontools |
+| nvme | NVMe device management | nvme-cli | nvme-cli |
+| lsblk | Block device listing | util-linux | util-linux |
+| pvs/vgs/lvs | LVM information | lvm2 | lvm2 |
+| mdadm | Software RAID management | mdadm | mdadm |
+| iscsiadm | iSCSI initiator | open-iscsi | iscsi-initiator-utils |
+| multipath | Multipath I/O | multipath-tools | device-mapper-multipath |
+| fio | I/O benchmarking | fio | fio |
+| e4defrag | ext4 fragmentation | e2fsprogs | e2fsprogs |
+| xfs_db | XFS analysis | xfsprogs | xfsprogs |
+| blkid | Partition type detection | util-linux | util-linux |
+| mokutil | Secure Boot status | mokutil | mokutil |
+
+**Partition Scheme Detection:**
+- **GPT** (GUID Partition Table) - Modern, UEFI, supports >2TB
+- **MBR** (msdos) - Legacy, BIOS, 2TB limit per partition
+- Warns if MBR is used on disks >2TB
+
+**Partition Type Detection:**
+- EFI System Partition (ESP) - UEFI boot
+- BIOS Boot Partition - GPT + Legacy BIOS
+- LVM Physical Volumes
+- MD RAID members
+- Linux swap
+
+**Filesystem Detection:**
+- ext4, ext3, ext2 (Linux standard)
+- XFS (RHEL/CentOS default)
+- Btrfs (copy-on-write, snapshots)
+- ZFS (advanced RAID + filesystem)
+- bcachefs (next-gen CoW filesystem)
+- FAT32/vfat (EFI partitions)
+
+**Manual installation if automatic install fails:**
+
+```bash
+# Debian/Ubuntu
+sudo apt-get install -y smartmontools nvme-cli lvm2 fio multipath-tools open-iscsi
+
+# RHEL 8+/Rocky/Alma/Amazon Linux 2023
+sudo dnf install -y smartmontools nvme-cli lvm2 fio device-mapper-multipath iscsi-initiator-utils
+
+# RHEL 7/CentOS 7/Amazon Linux 2
+sudo yum install -y smartmontools nvme-cli lvm2 fio device-mapper-multipath iscsi-initiator-utils
+
+# SUSE/openSUSE
+sudo zypper install -y smartmontools nvme-cli lvm2 fio multipath-tools open-iscsi
+
+# Arch Linux
+sudo pacman -S smartmontools nvme-cli lvm2 fio multipath-tools open-iscsi
+
+# Alpine Linux
+sudo apk add smartmontools nvme-cli lvm2 fio
+```
+
+</details>
+
 ---
 
 ## 📦 **What's Included**
@@ -654,6 +756,7 @@ For AWS-specific issues, the tool can automatically create support cases with di
 
 ## 📝 **Version History**
 
+- **v1.1** (February 2026) - Added comprehensive storage profiling, improved OS version detection, expanded distro support (Arch, Alpine, Oracle Linux), automatic storage tool installation
 - **v1.0** (January 2026) - Initial release with comprehensive forensics and AWS Support integration
 
 ---
