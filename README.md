@@ -116,6 +116,7 @@ sudo ./invoke-linux-forensics.sh
 
 **Storage Profiling:**
 - **Partition scheme analysis** (GPT vs MBR with >2TB warnings)
+- **Partition alignment analysis** (4K/1MB alignment check for SSD/SAN/Cloud performance)
 - **Boot configuration detection** (UEFI vs Legacy BIOS, Secure Boot status)
 - **Partition type identification** (ESP, BIOS Boot, LVM, RAID, swap)
 - **Filesystem type detection** (ext4, XFS, Btrfs, ZFS, bcachefs, etc.)
@@ -408,6 +409,7 @@ The tool automatically detects:
 <details>
 <summary><strong>Storage Issues</strong></summary>
 
+- **Misaligned partitions** (4K alignment check - 30-50% perf loss on SSD/SAN/Cloud)
 - **MBR partition on >2TB disk** (only 2TB usable - potential data loss)
 - Degraded RAID arrays (mdadm software RAID)
 - SMART drive failures or warnings (failing/about to fail)
@@ -644,6 +646,19 @@ The script automatically installs storage-related tools when needed. Tools are o
 - **GPT** (GUID Partition Table) - Modern, UEFI, supports >2TB
 - **MBR** (msdos) - Legacy, BIOS, 2TB limit per partition
 - Warns if MBR is used on disks >2TB
+
+**Partition Alignment Analysis:**
+- Reads partition start sector from `/sys/block/*/start`
+- Calculates offset in bytes using hardware sector size
+- Checks 4K (4096 byte) alignment - minimum for modern storage
+- Checks 1MB (1048576 byte) alignment - optimal for SSD/SAN
+- Detects storage type from `/sys/block/*/queue/rotational` and transport
+- Severity based on storage type:
+  - **SSD/NVMe**: High severity (30-50% performance loss)
+  - **SAN (iSCSI/FC/SAS)**: High severity (30-50% loss + I/O amplification)
+  - **Cloud (vd*/xvd*)**: High severity (typically SSD-backed)
+  - **HDD**: Medium severity (10-20% loss from read-modify-write)
+- Common cause: Partitions created on pre-2010 systems (sector 63 start)
 
 **Partition Type Detection:**
 - EFI System Partition (ESP) - UEFI boot

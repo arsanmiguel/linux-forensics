@@ -1161,6 +1161,135 @@ analyze_storage_profile() {
     fi
     
     # ==========================================================================
+    # PARTITION ALIGNMENT ANALYSIS
+    # ==========================================================================
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "--- PARTITION ALIGNMENT ANALYSIS ---" | tee -a "$OUTPUT_FILE"
+    echo "Checking for 4K alignment (critical for SSD/SAN performance)..." | tee -a "$OUTPUT_FILE"
+    
+    local aligned_count=0
+    local misaligned_count=0
+    
+    # Iterate through all block devices and their partitions
+    for disk in /sys/block/sd* /sys/block/nvme* /sys/block/vd* /sys/block/xvd* /sys/block/dm-*; do
+        [[ -d "$disk" ]] || continue
+        local disk_name=$(basename "$disk")
+        local disk_dev="/dev/$disk_name"
+        
+        # Skip if not a block device
+        [[ -b "$disk_dev" ]] || continue
+        
+        # Determine storage type for severity assessment
+        local storage_type="HDD"
+        local rotational=$(cat "$disk/queue/rotational" 2>/dev/null)
+        if [[ "$rotational" == "0" ]]; then
+            storage_type="SSD"
+        fi
+        
+        # Check for SAN/iSCSI
+        local transport=""
+        if [[ -L "$disk/device" ]]; then
+            transport=$(readlink -f "$disk/device" 2>/dev/null)
+            if [[ "$transport" == *"iscsi"* ]] || [[ "$transport" == *"fc_host"* ]] || [[ "$transport" == *"sas"* ]]; then
+                storage_type="SAN"
+            fi
+        fi
+        
+        # NVMe detection
+        if [[ "$disk_name" == nvme* ]]; then
+            storage_type="NVMe"
+        fi
+        
+        # Cloud storage detection (virtio, xen)
+        if [[ "$disk_name" == vd* ]] || [[ "$disk_name" == xvd* ]]; then
+            storage_type="Cloud"
+        fi
+        
+        # Get partitions for this disk
+        for part in "$disk"/"$disk_name"[0-9]* "$disk"/"$disk_name"p[0-9]*; do
+            [[ -d "$part" ]] || continue
+            local part_name=$(basename "$part")
+            local part_dev="/dev/$part_name"
+            
+            [[ -b "$part_dev" ]] || continue
+            
+            # Get partition start sector
+            local start_sector=$(cat "$part/start" 2>/dev/null)
+            [[ -z "$start_sector" ]] && continue
+            
+            # Calculate offset in bytes (assuming 512-byte sectors)
+            local sector_size=$(cat "$disk/queue/hw_sector_size" 2>/dev/null || echo "512")
+            local offset_bytes=$((start_sector * sector_size))
+            local offset_kb=$((offset_bytes / 1024))
+            
+            # Check 4K alignment (offset must be divisible by 4096)
+            local aligned_4k="NO"
+            if (( offset_bytes % 4096 == 0 )); then
+                aligned_4k="YES"
+            fi
+            
+            # Check 1MB alignment (optimal for SSD/SAN)
+            local aligned_1mb="NO"
+            if (( offset_bytes % 1048576 == 0 )); then
+                aligned_1mb="YES"
+            fi
+            
+            # Get mount point if any
+            local mount_point=$(lsblk -no MOUNTPOINT "$part_dev" 2>/dev/null | head -1)
+            [[ -z "$mount_point" ]] && mount_point="not mounted"
+            
+            if [[ "$aligned_4k" == "YES" ]]; then
+                ((aligned_count++))
+                local align_status="ALIGNED"
+                if [[ "$aligned_1mb" == "YES" ]]; then
+                    align_status="ALIGNED (1MB boundary - optimal)"
+                fi
+                echo "  $part_dev: $align_status - Offset: ${offset_kb}KB ($start_sector sectors) [$storage_type] - $mount_point" | tee -a "$OUTPUT_FILE"
+            else
+                ((misaligned_count++))
+                echo "  $part_dev: MISALIGNED - Offset: ${offset_kb}KB ($start_sector sectors) [$storage_type] - $mount_point" | tee -a "$OUTPUT_FILE"
+                
+                # Determine severity based on storage type
+                local severity="Medium"
+                local perf_impact="10-20% performance loss"
+                if [[ "$storage_type" == "SSD" ]] || [[ "$storage_type" == "NVMe" ]]; then
+                    severity="High"
+                    perf_impact="30-50% performance loss"
+                elif [[ "$storage_type" == "SAN" ]]; then
+                    severity="High"
+                    perf_impact="30-50% performance loss + backend I/O amplification"
+                elif [[ "$storage_type" == "Cloud" ]]; then
+                    severity="High"
+                    perf_impact="30-50% performance loss (cloud storage typically SSD-backed)"
+                fi
+                
+                log_bottleneck "Storage" "Misaligned partition $part_dev ($mount_point)" "Offset ${offset_kb}KB" "4K aligned" "$severity"
+            fi
+        done
+    done
+    
+    echo "" | tee -a "$OUTPUT_FILE"
+    echo "Partition Alignment Summary:" | tee -a "$OUTPUT_FILE"
+    echo "  Aligned partitions: $aligned_count" | tee -a "$OUTPUT_FILE"
+    if (( misaligned_count > 0 )); then
+        echo "  Misaligned partitions: $misaligned_count (PERFORMANCE IMPACT)" | tee -a "$OUTPUT_FILE"
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "  Misalignment Impact:" | tee -a "$OUTPUT_FILE"
+        echo "    - SSD/NVMe: 30-50% performance degradation" | tee -a "$OUTPUT_FILE"
+        echo "    - SAN (iSCSI/FC): 30-50% degradation + increased backend I/O" | tee -a "$OUTPUT_FILE"
+        echo "    - Cloud (EBS/Azure): 30-50% degradation (SSD-backed)" | tee -a "$OUTPUT_FILE"
+        echo "    - HDD: 10-20% degradation (extra read-modify-write cycles)" | tee -a "$OUTPUT_FILE"
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "  Remediation:" | tee -a "$OUTPUT_FILE"
+        echo "    - Backup data and recreate partition with proper alignment" | tee -a "$OUTPUT_FILE"
+        echo "    - Use 'parted' with 'align optimal' or specify 1MiB start" | tee -a "$OUTPUT_FILE"
+        echo "    - fdisk: ensure partition starts at sector 2048 (1MB offset)" | tee -a "$OUTPUT_FILE"
+        echo "    - Common cause: partitions created on older systems (pre-2010)" | tee -a "$OUTPUT_FILE"
+    else
+        echo "  All partitions are properly aligned" | tee -a "$OUTPUT_FILE"
+    fi
+    
+    # ==========================================================================
     # BOOT MODE (UEFI vs BIOS)
     # ==========================================================================
     echo "" | tee -a "$OUTPUT_FILE"
