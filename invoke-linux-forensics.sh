@@ -438,6 +438,40 @@ get_package_name() {
                 *) pkg="iotop" ;;
             esac
             ;;
+        # Enhanced profiling tools
+        htop)
+            case "$DISTRO" in
+                ubuntu|debian|linuxmint|pop) pkg="htop" ;;
+                rhel|centos|fedora|amzn|rocky|alma|ol) pkg="htop" ;;
+                sles|opensuse*) pkg="htop" ;;
+                arch|manjaro) pkg="htop" ;;
+                alpine) pkg="htop" ;;
+                freebsd) pkg="sysutils/htop" ;;
+                *) pkg="htop" ;;
+            esac
+            ;;
+        btop)
+            case "$DISTRO" in
+                ubuntu|debian|linuxmint|pop) pkg="btop" ;;
+                rhel|centos|fedora|amzn|rocky|alma|ol) pkg="btop" ;;
+                sles|opensuse*) pkg="btop" ;;
+                arch|manjaro) pkg="btop" ;;
+                alpine) pkg="btop" ;;
+                freebsd) pkg="sysutils/btop" ;;
+                *) pkg="btop" ;;
+            esac
+            ;;
+        glances)
+            case "$DISTRO" in
+                ubuntu|debian|linuxmint|pop) pkg="glances" ;;
+                rhel|centos|fedora|amzn|rocky|alma|ol) pkg="glances" ;;
+                sles|opensuse*) pkg="glances" ;;
+                arch|manjaro) pkg="glances" ;;
+                alpine) pkg="glances" ;;
+                freebsd) pkg="sysutils/py-glances" ;;
+                *) pkg="glances" ;;
+            esac
+            ;;
         e4defrag)
             case "$DISTRO" in
                 ubuntu|debian|linuxmint|pop) pkg="e2fsprogs" ;;
@@ -496,6 +530,9 @@ check_and_install_dependencies() {
     # Core performance monitoring tools
     local core_tools=("mpstat" "iostat" "vmstat" "netstat" "bc")
     
+    # Enhanced profiling tools (optional but recommended)
+    local enhanced_tools=("htop" "btop" "glances")
+    
     # Check and install core tools
     local missing=false
     for tool in "${core_tools[@]}"; do
@@ -519,6 +556,29 @@ check_and_install_dependencies() {
                 log_warning "${tool} should be part of base system but is missing"
                 missing=true
             fi
+        fi
+    done
+    
+    # Check and install enhanced profiling tools
+    log_info "Checking enhanced profiling tools..."
+    for tool in "${enhanced_tools[@]}"; do
+        if ! command -v "$tool" >/dev/null 2>&1; then
+            log_info "${tool} not found - attempting to install..."
+            
+            local pkg=$(get_package_name "$tool")
+            if [[ -n "$pkg" ]]; then
+                if install_package "$pkg"; then
+                    if command -v "$tool" >/dev/null 2>&1; then
+                        log_success "${tool} installed successfully"
+                    else
+                        log_warning "${tool} package installed but command not available"
+                    fi
+                else
+                    log_warning "Could not install ${tool} - continuing without it"
+                fi
+            fi
+        else
+            log_success "${tool} is available"
         fi
     done
     
@@ -669,6 +729,44 @@ collect_system_info() {
 }
 
 #############################################################################
+# Glances System Overview
+#############################################################################
+
+analyze_glances_overview() {
+    if command -v glances >/dev/null 2>&1; then
+        print_header "GLANCES SYSTEM OVERVIEW"
+        
+        log_info "Capturing glances system snapshot..."
+        
+        # Glances stdout mode with 1 iteration
+        echo "System Snapshot (glances --stdout cpu,mem,load,diskio,network):" | tee -a "$OUTPUT_FILE"
+        glances --stdout cpu,mem,load,diskio,network -1 2>/dev/null | tee -a "$OUTPUT_FILE" || \
+        echo "  glances stdout capture not available" | tee -a "$OUTPUT_FILE"
+        
+        # Export to JSON for detailed analysis if in deep mode
+        if [[ "$MODE" == "deep" ]]; then
+            local glances_json="/tmp/glances_snapshot_$(date +%Y%m%d_%H%M%S).json"
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "Exporting detailed snapshot to: ${glances_json}" | tee -a "$OUTPUT_FILE"
+            glances --export json --export-json-file "$glances_json" -1 2>/dev/null || true
+            
+            if [[ -f "$glances_json" ]]; then
+                echo "  JSON export successful - attach to support case for detailed analysis" | tee -a "$OUTPUT_FILE"
+            fi
+        fi
+        
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Tip: Run 'glances' interactively for real-time monitoring with:" | tee -a "$OUTPUT_FILE"
+        echo "  - CPU, memory, disk, network graphs" | tee -a "$OUTPUT_FILE"
+        echo "  - Per-process resource usage" | tee -a "$OUTPUT_FILE"
+        echo "  - Docker/container monitoring" | tee -a "$OUTPUT_FILE"
+        echo "  - Alerts and thresholds" | tee -a "$OUTPUT_FILE"
+        
+        log_success "Glances overview completed"
+    fi
+}
+
+#############################################################################
 # CPU Forensics
 #############################################################################
 
@@ -771,6 +869,24 @@ analyze_cpu() {
     ps aux --sort=-%cpu 2>/dev/null | head -11 | tail -10 | awk '{printf "  %-20s PID: %-8s CPU: %5s%% MEM: %5s%%\n", $11, $2, $3, $4}' | tee -a "$OUTPUT_FILE" || \
     ps -eo comm,pid,pcpu,pmem --sort=-pcpu 2>/dev/null | head -11 | tail -10 | tee -a "$OUTPUT_FILE" || \
     log_warning "Unable to list top CPU consumers"
+    
+    # ==========================================================================
+    # ENHANCED CPU PROFILING (htop/btop)
+    # ==========================================================================
+    if command -v htop >/dev/null 2>&1; then
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "--- HTOP CPU SNAPSHOT ---" | tee -a "$OUTPUT_FILE"
+        # htop batch mode - capture current state
+        htop -C -d 10 -n 1 2>/dev/null | head -40 | tee -a "$OUTPUT_FILE" || \
+        echo "  htop batch capture not available (may require terminal)" | tee -a "$OUTPUT_FILE"
+    fi
+    
+    if command -v btop >/dev/null 2>&1; then
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "--- BTOP AVAILABLE ---" | tee -a "$OUTPUT_FILE"
+        echo "  btop installed - run 'btop' for interactive system monitoring" | tee -a "$OUTPUT_FILE"
+        echo "  Features: CPU, memory, disk, network graphs with historical data" | tee -a "$OUTPUT_FILE"
+    fi
     
     # ==========================================================================
     # SAR CPU ANALYSIS (Real-time and Historical)
@@ -3100,6 +3216,7 @@ main() {
     
     # Execute diagnostics based on mode
     collect_system_info
+    analyze_glances_overview
     
     case "$MODE" in
         quick)

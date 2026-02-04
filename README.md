@@ -7,13 +7,15 @@ A comprehensive Bash-based diagnostic tool for Linux and FreeBSD servers that au
 **Key Features:**
 - ✅ Comprehensive performance forensics (CPU, Memory, Disk, Network, Database)
 - ✅ **Storage profiling** (topology, tiering, cloud storage, SMART health, capacity analysis, SAN/NAS detection)
+- ✅ **Enhanced profiling tools** - htop, btop, glances (auto-installed)
 - ✅ **AWS DMS SOURCE DATABASE diagnostics** (binary logging, replication lag, CloudWatch agent, connection analysis)
 - ✅ Automated bottleneck detection
 - ✅ **Automatic dependency installation** (Debian/Ubuntu, RHEL/CentOS/Amazon Linux, SUSE, Arch, Alpine, FreeBSD)
 - ✅ **Version-aware OS detection** (auto-selects correct tools and packages per distro version)
 - ✅ Multi-distro support with intelligent fallbacks
 - ✅ **FreeBSD support** (GEOM, ZFS, gpart, camcontrol, pkg package manager)
-- ✅ CPU forensics (load average, context switches, steal time, thread analysis)
+- ✅ CPU forensics (load average, context switches, steal time, htop/btop profiling)
+- ✅ **Glances system overview** - comprehensive real-time monitoring snapshot
 - ✅ Memory forensics (OOM detection, swap analysis, page faults, slab memory, leak detection)
 - ✅ Disk I/O testing (usage, wait times, read/write performance, iotop support, D state detection)
 - ✅ **Database forensics** - DBA-level query analysis + DMS readiness checks
@@ -92,6 +94,8 @@ sudo ./invoke-linux-forensics.sh
 - Context switch rate monitoring
 - CPU steal time detection (hypervisor contention)
 - Top CPU-consuming processes
+- **htop snapshot** - enhanced process view with CPU/memory bars
+- **btop availability** - modern resource monitor with graphs
 - **SAR CPU analysis:** Real-time sampling (sar -u, sar -q, sar -P ALL)
 - **Historical CPU data:** Automatic detection of /var/log/sa data
 
@@ -159,6 +163,12 @@ sudo ./invoke-linux-forensics.sh
 - Buffer/queue settings
 - **SAR network analysis:** Real-time sampling (sar -n DEV/EDEV/TCP/ETCP/SOCK)
 - **Historical network data:** Automatic detection of /var/log/sa data
+
+**Glances System Overview:**
+- Comprehensive system snapshot (CPU, memory, load, disk I/O, network)
+- JSON export for detailed analysis (in deep mode)
+- Real-time monitoring available via interactive mode
+- Docker/container monitoring support
 
 **Bottleneck Detection:**
 - Automatically identifies performance issues
@@ -789,6 +799,39 @@ sar -u -s 09:00:00 -e 17:00:00 -f /var/log/sa/sa15
 ```
 
 </details>
+
+---
+
+## 🔧 **Profiling Tools**
+
+The script automatically installs these enhanced profiling tools:
+
+| Tool | Purpose | Linux Package | FreeBSD Package |
+|------|---------|---------------|-----------------|
+| **htop** | Interactive process viewer with CPU/memory bars | `htop` | `sysutils/htop` |
+| **btop** | Modern resource monitor with graphs and history | `btop` | `sysutils/btop` |
+| **glances** | Comprehensive system monitoring (CPU, mem, disk, network) | `glances` | `sysutils/py-glances` |
+| **iotop** | I/O monitoring by process | `iotop` | `sysutils/py-iotop` |
+| **sysstat** | SAR, mpstat, iostat for historical data | `sysstat` | `sysutils/sysstat` |
+| **smartmontools** | Disk SMART health data | `smartmontools` | `sysutils/smartmontools` |
+
+**Manual Installation (if auto-install fails):**
+```bash
+# Debian/Ubuntu
+sudo apt-get install -y htop btop glances iotop sysstat smartmontools
+
+# RHEL/CentOS/Fedora/Amazon Linux
+sudo dnf install -y htop btop glances iotop sysstat smartmontools
+
+# SUSE/openSUSE
+sudo zypper install -y htop btop glances iotop sysstat smartmontools
+
+# Arch Linux
+sudo pacman -S htop btop glances iotop sysstat smartmontools
+
+# FreeBSD
+sudo pkg install sysutils/htop sysutils/btop sysutils/py-glances sysutils/py-iotop sysutils/sysstat sysutils/smartmontools
+```
 
 ---
 
