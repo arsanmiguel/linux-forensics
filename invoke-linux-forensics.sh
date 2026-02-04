@@ -6,7 +6,7 @@
 # Comprehensive performance diagnostics with automatic bottleneck detection
 # and AWS Support integration
 #
-# Supports: Debian/Ubuntu, RHEL/CentOS/Fedora/Amazon Linux, SLES/openSUSE, Arch, Alpine
+# Supports: Debian/Ubuntu, RHEL/CentOS/Fedora/Amazon Linux, SLES/openSUSE, Arch, Alpine, FreeBSD
 #
 # Usage: sudo ./invoke-linux-forensics.sh [OPTIONS]
 #
@@ -33,6 +33,7 @@ if [ -z "$BASH_VERSION" ]; then
         echo "  - SLES/openSUSE: zypper install bash"
         echo "  - Arch: pacman -S bash"
         echo "  - Alpine: apk add bash"
+        echo "  - FreeBSD: pkg install bash"
         exit 1
     fi
 fi
@@ -68,6 +69,11 @@ detect_os() {
         DISTRO="macos"
         OS_VERSION=$(sw_vers -productVersion 2>/dev/null || echo "unknown")
         OS_VERSION_MAJOR=$(echo "$OS_VERSION" | cut -d. -f1)
+    elif [[ "$(uname -s)" == "FreeBSD" ]]; then
+        DISTRO="freebsd"
+        OS_VERSION=$(freebsd-version -u 2>/dev/null || uname -r)
+        OS_VERSION_MAJOR=$(echo "$OS_VERSION" | cut -d. -f1)
+        OS_NAME="FreeBSD $OS_VERSION"
     elif [[ -f /etc/os-release ]]; then
         . /etc/os-release
         DISTRO="$ID"
@@ -138,9 +144,14 @@ detect_os() {
         alpine)
             PACKAGE_MANAGER="apk"
             ;;
+        freebsd)
+            PACKAGE_MANAGER="pkg"
+            ;;
         *)
             # Try to detect package manager if distro unknown
-            if command -v apt-get >/dev/null 2>&1; then
+            if command -v pkg >/dev/null 2>&1 && [[ "$(uname -s)" == "FreeBSD" ]]; then
+                PACKAGE_MANAGER="pkg"
+            elif command -v apt-get >/dev/null 2>&1; then
                 PACKAGE_MANAGER="apt-get"
             elif command -v dnf >/dev/null 2>&1; then
                 PACKAGE_MANAGER="dnf"
@@ -190,6 +201,13 @@ diagnose_package_install_failure() {
             echo "  sudo ${PACKAGE_MANAGER} clean all" | tee -a "$OUTPUT_FILE"
             echo "  sudo ${PACKAGE_MANAGER} makecache" | tee -a "$OUTPUT_FILE"
             ;;
+        pkg)
+            echo "Repository configuration:" | tee -a "$OUTPUT_FILE"
+            echo "  Check /etc/pkg/FreeBSD.conf" | tee -a "$OUTPUT_FILE"
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "Try:" | tee -a "$OUTPUT_FILE"
+            echo "  sudo pkg update -f" | tee -a "$OUTPUT_FILE"
+            ;;
     esac
     
     # Check disk space
@@ -214,6 +232,10 @@ diagnose_package_install_failure() {
         rhel|centos|fedora|amzn|rocky|alma)
             echo "Try installing manually:" | tee -a "$OUTPUT_FILE"
             echo "  sudo ${PACKAGE_MANAGER} install -y ${package}" | tee -a "$OUTPUT_FILE"
+            ;;
+        freebsd)
+            echo "Try installing manually:" | tee -a "$OUTPUT_FILE"
+            echo "  sudo pkg install -y ${package}" | tee -a "$OUTPUT_FILE"
             ;;
     esac
     
@@ -258,6 +280,12 @@ install_package() {
                 return 0
             fi
             ;;
+        pkg)
+            if pkg install -y "$package" >/dev/null 2>&1; then
+                log_success "${package} installed successfully"
+                return 0
+            fi
+            ;;
         *)
             log_warning "Unknown package manager - cannot auto-install ${package}"
             MISSING_PACKAGES+=("$package")
@@ -284,6 +312,7 @@ get_package_name() {
                 sles|opensuse*) pkg="sysstat" ;;
                 arch|manjaro) pkg="sysstat" ;;
                 alpine) pkg="sysstat" ;;
+                freebsd) pkg="sysutils/sysstat" ;;
                 *) pkg="sysstat" ;;
             esac
             ;;
@@ -294,6 +323,7 @@ get_package_name() {
                 sles|opensuse*) pkg="procps" ;;
                 arch|manjaro) pkg="procps-ng" ;;
                 alpine) pkg="procps" ;;
+                freebsd) pkg="base" ;;  # vmstat is part of FreeBSD base system
                 *) pkg="procps" ;;
             esac
             ;;
@@ -304,11 +334,15 @@ get_package_name() {
                 sles|opensuse*) pkg="net-tools" ;;
                 arch|manjaro) pkg="net-tools" ;;
                 alpine) pkg="net-tools" ;;
+                freebsd) pkg="base" ;;  # netstat is part of FreeBSD base system
                 *) pkg="net-tools" ;;
             esac
             ;;
         bc)
-            pkg="bc"
+            case "$DISTRO" in
+                freebsd) pkg="math/bc" ;;
+                *) pkg="bc" ;;
+            esac
             ;;
         # Storage profiling tools
         smartctl)
@@ -318,6 +352,7 @@ get_package_name() {
                 sles|opensuse*) pkg="smartmontools" ;;
                 arch|manjaro) pkg="smartmontools" ;;
                 alpine) pkg="smartmontools" ;;
+                freebsd) pkg="sysutils/smartmontools" ;;
                 *) pkg="smartmontools" ;;
             esac
             ;;
@@ -328,6 +363,7 @@ get_package_name() {
                 sles|opensuse*) pkg="nvme-cli" ;;
                 arch|manjaro) pkg="nvme-cli" ;;
                 alpine) pkg="nvme-cli" ;;
+                freebsd) pkg="sysutils/nvme-cli" ;;
                 *) pkg="nvme-cli" ;;
             esac
             ;;
@@ -338,6 +374,7 @@ get_package_name() {
                 sles|opensuse*) pkg="util-linux" ;;
                 arch|manjaro) pkg="util-linux" ;;
                 alpine) pkg="util-linux" ;;
+                freebsd) pkg="none" ;;  # FreeBSD uses geom/gpart/camcontrol instead
                 *) pkg="util-linux" ;;
             esac
             ;;
@@ -348,6 +385,7 @@ get_package_name() {
                 sles|opensuse*) pkg="lvm2" ;;
                 arch|manjaro) pkg="lvm2" ;;
                 alpine) pkg="lvm2" ;;
+                freebsd) pkg="none" ;;  # FreeBSD uses GEOM/ZFS instead of LVM
                 *) pkg="lvm2" ;;
             esac
             ;;
@@ -358,6 +396,7 @@ get_package_name() {
                 sles|opensuse*) pkg="mdadm" ;;
                 arch|manjaro) pkg="mdadm" ;;
                 alpine) pkg="mdadm" ;;
+                freebsd) pkg="none" ;;  # FreeBSD uses GEOM (gmirror/graid) instead of mdadm
                 *) pkg="mdadm" ;;
             esac
             ;;
@@ -368,6 +407,7 @@ get_package_name() {
                 sles|opensuse*) pkg="open-iscsi" ;;
                 arch|manjaro) pkg="open-iscsi" ;;
                 alpine) pkg="open-iscsi" ;;
+                freebsd) pkg="net/iscsi-initiator-utils" ;;
                 *) pkg="open-iscsi" ;;
             esac
             ;;
@@ -377,11 +417,15 @@ get_package_name() {
                 rhel|centos|fedora|amzn|rocky|alma|ol) pkg="device-mapper-multipath" ;;
                 sles|opensuse*) pkg="multipath-tools" ;;
                 arch|manjaro) pkg="multipath-tools" ;;
+                freebsd) pkg="sysutils/mpath-tools" ;;
                 *) pkg="multipath-tools" ;;
             esac
             ;;
         fio)
-            pkg="fio"
+            case "$DISTRO" in
+                freebsd) pkg="benchmarks/fio" ;;
+                *) pkg="fio" ;;
+            esac
             ;;
         iotop)
             case "$DISTRO" in
@@ -390,6 +434,7 @@ get_package_name() {
                 sles|opensuse*) pkg="iotop" ;;
                 arch|manjaro) pkg="iotop" ;;
                 alpine) pkg="iotop" ;;
+                freebsd) pkg="sysutils/py-iotop" ;;
                 *) pkg="iotop" ;;
             esac
             ;;
@@ -727,6 +772,67 @@ analyze_cpu() {
     ps -eo comm,pid,pcpu,pmem --sort=-pcpu 2>/dev/null | head -11 | tail -10 | tee -a "$OUTPUT_FILE" || \
     log_warning "Unable to list top CPU consumers"
     
+    # ==========================================================================
+    # SAR CPU ANALYSIS (Real-time and Historical)
+    # ==========================================================================
+    if command -v sar >/dev/null 2>&1; then
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "--- SAR CPU ANALYSIS ---" | tee -a "$OUTPUT_FILE"
+        
+        # Real-time CPU sampling with sar
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Real-time CPU Sampling (sar -u, 5 samples):" | tee -a "$OUTPUT_FILE"
+        sar -u 1 5 2>/dev/null | tee -a "$OUTPUT_FILE" || log_warning "sar -u failed"
+        
+        # Load average history with sar
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Run Queue and Load Average (sar -q, 5 samples):" | tee -a "$OUTPUT_FILE"
+        sar -q 1 5 2>/dev/null | tee -a "$OUTPUT_FILE" || log_warning "sar -q failed"
+        
+        # Per-CPU breakdown
+        if [[ "$MODE" == "deep" ]]; then
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "Per-CPU Breakdown (sar -P ALL, 3 samples):" | tee -a "$OUTPUT_FILE"
+            sar -P ALL 1 3 2>/dev/null | tee -a "$OUTPUT_FILE" || log_warning "sar -P ALL failed"
+        fi
+        
+        # Check for historical sar data
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Historical SAR Data (today):" | tee -a "$OUTPUT_FILE"
+        
+        # Try different sar data locations
+        local sar_data_found=false
+        for sar_dir in /var/log/sa /var/log/sysstat /var/log/sysstat/sa; do
+            if [[ -d "$sar_dir" ]]; then
+                local today=$(date +%d)
+                local sar_file="${sar_dir}/sa${today}"
+                
+                if [[ -f "$sar_file" ]]; then
+                    echo "  Found sar data: $sar_file" | tee -a "$OUTPUT_FILE"
+                    sar_data_found=true
+                    
+                    echo "" | tee -a "$OUTPUT_FILE"
+                    echo "  CPU History (today):" | tee -a "$OUTPUT_FILE"
+                    sar -u -f "$sar_file" 2>/dev/null | tail -20 | tee -a "$OUTPUT_FILE" || true
+                    
+                    echo "" | tee -a "$OUTPUT_FILE"
+                    echo "  Load Average History (today):" | tee -a "$OUTPUT_FILE"
+                    sar -q -f "$sar_file" 2>/dev/null | tail -20 | tee -a "$OUTPUT_FILE" || true
+                    
+                    break
+                fi
+            fi
+        done
+        
+        if [[ "$sar_data_found" == "false" ]]; then
+            echo "  No historical sar data found." | tee -a "$OUTPUT_FILE"
+            echo "  To enable: systemctl enable --now sysstat (or enable sysstat cron)" | tee -a "$OUTPUT_FILE"
+        fi
+    else
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "sar not available - install sysstat for detailed CPU history" | tee -a "$OUTPUT_FILE"
+    fi
+    
     log_success "CPU forensics completed"
 }
 
@@ -868,6 +974,59 @@ analyze_memory() {
         fi
     fi
     
+    # ==========================================================================
+    # SAR MEMORY ANALYSIS (Real-time and Historical)
+    # ==========================================================================
+    if command -v sar >/dev/null 2>&1; then
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "--- SAR MEMORY ANALYSIS ---" | tee -a "$OUTPUT_FILE"
+        
+        # Real-time memory sampling with sar
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Real-time Memory Sampling (sar -r, 5 samples):" | tee -a "$OUTPUT_FILE"
+        sar -r 1 5 2>/dev/null | tee -a "$OUTPUT_FILE" || log_warning "sar -r failed"
+        
+        # Swap usage with sar
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Swap Activity (sar -S, 5 samples):" | tee -a "$OUTPUT_FILE"
+        sar -S 1 5 2>/dev/null | tee -a "$OUTPUT_FILE" || log_warning "sar -S failed"
+        
+        # Page statistics
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Paging Statistics (sar -B, 5 samples):" | tee -a "$OUTPUT_FILE"
+        sar -B 1 5 2>/dev/null | tee -a "$OUTPUT_FILE" || log_warning "sar -B failed"
+        
+        # Check for historical sar data
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Historical Memory Data (today):" | tee -a "$OUTPUT_FILE"
+        
+        local sar_data_found=false
+        for sar_dir in /var/log/sa /var/log/sysstat /var/log/sysstat/sa; do
+            if [[ -d "$sar_dir" ]]; then
+                local today=$(date +%d)
+                local sar_file="${sar_dir}/sa${today}"
+                
+                if [[ -f "$sar_file" ]]; then
+                    sar_data_found=true
+                    
+                    echo "" | tee -a "$OUTPUT_FILE"
+                    echo "  Memory History (today):" | tee -a "$OUTPUT_FILE"
+                    sar -r -f "$sar_file" 2>/dev/null | tail -20 | tee -a "$OUTPUT_FILE" || true
+                    
+                    echo "" | tee -a "$OUTPUT_FILE"
+                    echo "  Swap History (today):" | tee -a "$OUTPUT_FILE"
+                    sar -S -f "$sar_file" 2>/dev/null | tail -20 | tee -a "$OUTPUT_FILE" || true
+                    
+                    break
+                fi
+            fi
+        done
+        
+        if [[ "$sar_data_found" == "false" ]]; then
+            echo "  No historical sar data found." | tee -a "$OUTPUT_FILE"
+        fi
+    fi
+    
     log_success "Memory forensics completed"
 }
 
@@ -987,6 +1146,61 @@ analyze_disk() {
         fi
     fi
     
+    # ==========================================================================
+    # SAR DISK I/O ANALYSIS (Real-time and Historical)
+    # ==========================================================================
+    if command -v sar >/dev/null 2>&1; then
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "--- SAR DISK I/O ANALYSIS ---" | tee -a "$OUTPUT_FILE"
+        
+        # Real-time disk I/O with sar
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "I/O Transfer Rates (sar -b, 5 samples):" | tee -a "$OUTPUT_FILE"
+        sar -b 1 5 2>/dev/null | tee -a "$OUTPUT_FILE" || log_warning "sar -b failed"
+        
+        # Per-device I/O statistics
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Per-Device I/O Statistics (sar -d, 5 samples):" | tee -a "$OUTPUT_FILE"
+        sar -d 1 5 2>/dev/null | tee -a "$OUTPUT_FILE" || log_warning "sar -d failed"
+        
+        # Detailed disk activity in deep mode
+        if [[ "$MODE" == "deep" ]]; then
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "Extended Disk Statistics (sar -dp, 5 samples):" | tee -a "$OUTPUT_FILE"
+            sar -dp 1 5 2>/dev/null | tee -a "$OUTPUT_FILE" || log_warning "sar -dp failed"
+        fi
+        
+        # Check for historical sar data
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Historical Disk I/O Data (today):" | tee -a "$OUTPUT_FILE"
+        
+        local sar_data_found=false
+        for sar_dir in /var/log/sa /var/log/sysstat /var/log/sysstat/sa; do
+            if [[ -d "$sar_dir" ]]; then
+                local today=$(date +%d)
+                local sar_file="${sar_dir}/sa${today}"
+                
+                if [[ -f "$sar_file" ]]; then
+                    sar_data_found=true
+                    
+                    echo "" | tee -a "$OUTPUT_FILE"
+                    echo "  I/O Transfer History (today):" | tee -a "$OUTPUT_FILE"
+                    sar -b -f "$sar_file" 2>/dev/null | tail -20 | tee -a "$OUTPUT_FILE" || true
+                    
+                    echo "" | tee -a "$OUTPUT_FILE"
+                    echo "  Per-Device History (today):" | tee -a "$OUTPUT_FILE"
+                    sar -d -f "$sar_file" 2>/dev/null | tail -30 | tee -a "$OUTPUT_FILE" || true
+                    
+                    break
+                fi
+            fi
+        done
+        
+        if [[ "$sar_data_found" == "false" ]]; then
+            echo "  No historical sar data found." | tee -a "$OUTPUT_FILE"
+        fi
+    fi
+    
     log_success "Disk forensics completed"
 }
 
@@ -1042,12 +1256,41 @@ analyze_storage_profile() {
     echo "" | tee -a "$OUTPUT_FILE"
     echo "--- STORAGE TOPOLOGY ---" | tee -a "$OUTPUT_FILE"
     
-    # Block device listing with detailed info
-    if command -v lsblk >/dev/null 2>&1; then
+    # FreeBSD-specific storage topology
+    if [[ "$DISTRO" == "freebsd" ]]; then
         echo "" | tee -a "$OUTPUT_FILE"
-        echo "Block Devices:" | tee -a "$OUTPUT_FILE"
-        lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,MODEL,SERIAL,ROTA,DISC-GRAN 2>/dev/null | tee -a "$OUTPUT_FILE" || \
-        lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT 2>/dev/null | tee -a "$OUTPUT_FILE"
+        echo "GEOM Disk Configuration:" | tee -a "$OUTPUT_FILE"
+        
+        # Use geom disk list for disk info
+        if command -v geom >/dev/null 2>&1; then
+            geom disk list 2>/dev/null | grep -E "^Geom name:|Mediasize:|Sectorsize:|Mode:|descr:" | tee -a "$OUTPUT_FILE"
+        fi
+        
+        # Use camcontrol for SCSI/SATA devices
+        if command -v camcontrol >/dev/null 2>&1; then
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "CAM Device List:" | tee -a "$OUTPUT_FILE"
+            camcontrol devlist 2>/dev/null | tee -a "$OUTPUT_FILE"
+        fi
+        
+        # Show gpart info for partition layout
+        if command -v gpart >/dev/null 2>&1; then
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "Partition Layout (gpart):" | tee -a "$OUTPUT_FILE"
+            for disk in $(geom disk list 2>/dev/null | grep "^Geom name:" | awk '{print $3}'); do
+                echo "" | tee -a "$OUTPUT_FILE"
+                echo "  === $disk ===" | tee -a "$OUTPUT_FILE"
+                gpart show "$disk" 2>/dev/null | tee -a "$OUTPUT_FILE" || echo "    No partition table" | tee -a "$OUTPUT_FILE"
+            done
+        fi
+    else
+        # Linux: Block device listing with detailed info
+        if command -v lsblk >/dev/null 2>&1; then
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "Block Devices:" | tee -a "$OUTPUT_FILE"
+            lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,MODEL,SERIAL,ROTA,DISC-GRAN 2>/dev/null | tee -a "$OUTPUT_FILE" || \
+            lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT 2>/dev/null | tee -a "$OUTPUT_FILE"
+        fi
     fi
     
     # ==========================================================================
@@ -1059,8 +1302,67 @@ analyze_storage_profile() {
     local gpt_count=0
     local mbr_count=0
     local unknown_count=0
+    local bsdlabel_count=0
     
-    for disk in /sys/block/sd* /sys/block/nvme* /sys/block/vd* /sys/block/xvd*; do
+    # FreeBSD-specific partition scheme detection
+    if [[ "$DISTRO" == "freebsd" ]]; then
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Checking partition schemes via gpart..." | tee -a "$OUTPUT_FILE"
+        
+        for disk in $(geom disk list 2>/dev/null | grep "^Geom name:" | awk '{print $3}'); do
+            local disk_dev="/dev/$disk"
+            
+            # Get disk size
+            local size_bytes=$(geom disk list "$disk" 2>/dev/null | grep "Mediasize:" | awk '{print $2}')
+            local size_gb=$((size_bytes / 1024 / 1024 / 1024))
+            
+            # Get partition scheme from gpart
+            local scheme=$(gpart show "$disk" 2>/dev/null | head -1 | awk '{print $4}')
+            
+            local scheme_name=""
+            case "$scheme" in
+                GPT)
+                    scheme_name="GPT"
+                    ((gpt_count++))
+                    ;;
+                MBR)
+                    scheme_name="MBR"
+                    ((mbr_count++))
+                    # Warn if MBR on >2TB disk
+                    if (( size_gb > 2000 )); then
+                        log_bottleneck "Storage" "MBR partition on >2TB disk $disk_dev (data loss risk)" "MBR on ${size_gb}GB" "GPT" "High"
+                    fi
+                    ;;
+                BSD)
+                    scheme_name="BSD disklabel"
+                    ((bsdlabel_count++))
+                    ;;
+                *)
+                    if [[ -n "$scheme" ]]; then
+                        scheme_name="$scheme"
+                    else
+                        scheme_name="Unknown/Unpartitioned"
+                        ((unknown_count++))
+                    fi
+                    ;;
+            esac
+            
+            echo "  $disk_dev: ${size_gb}GB - $scheme_name" | tee -a "$OUTPUT_FILE"
+        done
+        
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Partition Scheme Summary:" | tee -a "$OUTPUT_FILE"
+        echo "  GPT Disks: $gpt_count (modern, UEFI compatible, >2TB support)" | tee -a "$OUTPUT_FILE"
+        echo "  MBR Disks: $mbr_count (legacy, BIOS, 2TB max per partition)" | tee -a "$OUTPUT_FILE"
+        if (( bsdlabel_count > 0 )); then
+            echo "  BSD Disklabel: $bsdlabel_count (traditional BSD partitioning)" | tee -a "$OUTPUT_FILE"
+        fi
+        if (( unknown_count > 0 )); then
+            echo "  Unknown/Raw: $unknown_count (unpartitioned or unrecognized)" | tee -a "$OUTPUT_FILE"
+        fi
+    else
+        # Linux partition scheme detection
+        for disk in /sys/block/sd* /sys/block/nvme* /sys/block/vd* /sys/block/xvd*; do
         [[ -d "$disk" ]] || continue
         local disk_name=$(basename "$disk")
         local disk_dev="/dev/$disk_name"
@@ -1118,6 +1420,7 @@ analyze_storage_profile() {
     if (( unknown_count > 0 )); then
         echo "  Unknown/Raw: $unknown_count (unpartitioned or unrecognized)" | tee -a "$OUTPUT_FILE"
     fi
+    fi  # End of Linux-specific partition scheme detection
     
     # ==========================================================================
     # PARTITION ALIGNMENT ANALYSIS
@@ -1129,8 +1432,98 @@ analyze_storage_profile() {
     local aligned_count=0
     local misaligned_count=0
     
-    # Iterate through all block devices and their partitions
-    for disk in /sys/block/sd* /sys/block/nvme* /sys/block/vd* /sys/block/xvd* /sys/block/dm-*; do
+    # FreeBSD-specific partition alignment check
+    if [[ "$DISTRO" == "freebsd" ]]; then
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "FreeBSD Partition Alignment:" | tee -a "$OUTPUT_FILE"
+        
+        for disk in $(geom disk list 2>/dev/null | grep "^Geom name:" | awk '{print $3}'); do
+            # Get sector size
+            local sector_size=$(geom disk list "$disk" 2>/dev/null | grep "Sectorsize:" | awk '{print $2}')
+            [[ -z "$sector_size" ]] && sector_size=512
+            
+            # Determine storage type
+            local storage_type="HDD"
+            local rotation=$(camcontrol identify "$disk" 2>/dev/null | grep -i "rotation" | grep -i "non")
+            if [[ -n "$rotation" ]]; then
+                storage_type="SSD"
+            fi
+            if [[ "$disk" == nvd* ]] || [[ "$disk" == nvme* ]]; then
+                storage_type="NVMe"
+            fi
+            
+            # Get partition info from gpart
+            local gpart_output=$(gpart show -p "$disk" 2>/dev/null)
+            if [[ -n "$gpart_output" ]]; then
+                echo "" | tee -a "$OUTPUT_FILE"
+                echo "  $disk [$storage_type] - Sector Size: ${sector_size} bytes:" | tee -a "$OUTPUT_FILE"
+                
+                # Parse gpart output for partition start offsets
+                echo "$gpart_output" | while read -r start size index type rest; do
+                    [[ "$start" =~ ^[0-9]+$ ]] || continue
+                    [[ "$type" == "-" ]] && continue  # Skip free space
+                    
+                    local offset_bytes=$((start * sector_size))
+                    local offset_kb=$((offset_bytes / 1024))
+                    
+                    # Check 4K alignment
+                    local aligned_4k="NO"
+                    local aligned_1mb="NO"
+                    if (( offset_bytes % 4096 == 0 )); then
+                        aligned_4k="YES"
+                    fi
+                    if (( offset_bytes % 1048576 == 0 )); then
+                        aligned_1mb="YES"
+                    fi
+                    
+                    if [[ "$aligned_4k" == "YES" ]]; then
+                        ((aligned_count++)) 2>/dev/null || aligned_count=$((aligned_count + 1))
+                        local align_status="ALIGNED"
+                        if [[ "$aligned_1mb" == "YES" ]]; then
+                            align_status="ALIGNED (1MB - optimal)"
+                        fi
+                        echo "    $index ($type): $align_status - Offset: ${offset_kb}KB ($start sectors)" | tee -a "$OUTPUT_FILE"
+                    else
+                        ((misaligned_count++)) 2>/dev/null || misaligned_count=$((misaligned_count + 1))
+                        echo "    $index ($type): MISALIGNED - Offset: ${offset_kb}KB ($start sectors)" | tee -a "$OUTPUT_FILE"
+                        
+                        local severity="Medium"
+                        if [[ "$storage_type" == "SSD" ]] || [[ "$storage_type" == "NVMe" ]]; then
+                            severity="High"
+                        fi
+                        log_bottleneck "Storage" "Misaligned partition ${disk}${index}" "Offset ${offset_kb}KB" "4K aligned" "$severity"
+                    fi
+                done
+            fi
+        done
+        
+        # Check ZFS alignment (ashift)
+        if command -v zpool >/dev/null 2>&1; then
+            echo "" | tee -a "$OUTPUT_FILE"
+            echo "ZFS Pool Alignment (ashift):" | tee -a "$OUTPUT_FILE"
+            
+            for pool in $(zpool list -H -o name 2>/dev/null); do
+                local ashift=$(zpool get -H -o value ashift "$pool" 2>/dev/null)
+                [[ -z "$ashift" ]] && continue
+                
+                local sector_size=$((1 << ashift))
+                
+                local alignment_status=""
+                if (( ashift >= 12 )); then
+                    alignment_status="OPTIMAL (ashift=$ashift = ${sector_size}-byte sectors)"
+                    ((aligned_count++)) 2>/dev/null || aligned_count=$((aligned_count + 1))
+                elif (( ashift == 9 )); then
+                    alignment_status="LEGACY (ashift=$ashift = 512-byte sectors)"
+                else
+                    alignment_status="ashift=$ashift (${sector_size}-byte sectors)"
+                fi
+                
+                echo "  Pool $pool: $alignment_status" | tee -a "$OUTPUT_FILE"
+            done
+        fi
+    else
+        # Linux: Iterate through all block devices and their partitions
+        for disk in /sys/block/sd* /sys/block/nvme* /sys/block/vd* /sys/block/xvd* /sys/block/dm-*; do
         [[ -d "$disk" ]] || continue
         local disk_name=$(basename "$disk")
         local disk_dev="/dev/$disk_name"
@@ -1247,6 +1640,7 @@ analyze_storage_profile() {
     else
         echo "  All partitions are properly aligned" | tee -a "$OUTPUT_FILE"
     fi
+    fi  # End of Linux-specific alignment check
     
     # ==========================================================================
     # BOOT MODE (UEFI vs BIOS)
@@ -1254,7 +1648,23 @@ analyze_storage_profile() {
     echo "" | tee -a "$OUTPUT_FILE"
     echo "Boot Configuration:" | tee -a "$OUTPUT_FILE"
     
-    if [[ -d /sys/firmware/efi ]]; then
+    # FreeBSD boot mode detection
+    if [[ "$DISTRO" == "freebsd" ]]; then
+        # Check for EFI
+        if kenv -q smbios.bios.vendor 2>/dev/null | grep -qi "efi"; then
+            echo "  Firmware: UEFI" | tee -a "$OUTPUT_FILE"
+        elif [[ -d /boot/efi ]] || mount | grep -q "efisys"; then
+            echo "  Firmware: UEFI" | tee -a "$OUTPUT_FILE"
+        else
+            echo "  Firmware: BIOS (Legacy)" | tee -a "$OUTPUT_FILE"
+        fi
+        
+        # Boot device
+        local boot_disk=$(sysctl -n kern.geom.confxml 2>/dev/null | grep -o 'bootcode="[^"]*"' | head -1)
+        if [[ -n "$boot_disk" ]]; then
+            echo "  Boot disk info available via kern.geom.confxml" | tee -a "$OUTPUT_FILE"
+        fi
+    elif [[ -d /sys/firmware/efi ]]; then
         echo "  Firmware: UEFI" | tee -a "$OUTPUT_FILE"
         
         # Check Secure Boot status
@@ -2337,12 +2747,72 @@ analyze_network() {
         log_warning "Unable to get network interface statistics"
     fi
     
-    # Network throughput (if sar available)
+    # ==========================================================================
+    # SAR NETWORK ANALYSIS (Real-time and Historical)
+    # ==========================================================================
     if command -v sar >/dev/null 2>&1; then
         echo "" | tee -a "$OUTPUT_FILE"
-        echo "Network Throughput (last 5 samples):" | tee -a "$OUTPUT_FILE"
-        sar -n DEV 1 5 2>/dev/null | grep -v "^$" | grep -v "Linux" | tail -20 | tee -a "$OUTPUT_FILE" || \
-        log_warning "sar network statistics not available"
+        echo "--- SAR NETWORK ANALYSIS ---" | tee -a "$OUTPUT_FILE"
+        
+        # Network device throughput
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Network Device Throughput (sar -n DEV, 5 samples):" | tee -a "$OUTPUT_FILE"
+        sar -n DEV 1 5 2>/dev/null | grep -v "^$" | tail -25 | tee -a "$OUTPUT_FILE" || \
+        log_warning "sar -n DEV failed"
+        
+        # Network errors
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Network Errors (sar -n EDEV, 5 samples):" | tee -a "$OUTPUT_FILE"
+        sar -n EDEV 1 5 2>/dev/null | grep -v "^$" | tail -25 | tee -a "$OUTPUT_FILE" || \
+        log_warning "sar -n EDEV failed"
+        
+        # TCP statistics
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "TCP Statistics (sar -n TCP, 5 samples):" | tee -a "$OUTPUT_FILE"
+        sar -n TCP 1 5 2>/dev/null | tee -a "$OUTPUT_FILE" || log_warning "sar -n TCP failed"
+        
+        # TCP errors
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "TCP Errors (sar -n ETCP, 5 samples):" | tee -a "$OUTPUT_FILE"
+        sar -n ETCP 1 5 2>/dev/null | tee -a "$OUTPUT_FILE" || log_warning "sar -n ETCP failed"
+        
+        # Socket statistics
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Socket Statistics (sar -n SOCK, 5 samples):" | tee -a "$OUTPUT_FILE"
+        sar -n SOCK 1 5 2>/dev/null | tee -a "$OUTPUT_FILE" || log_warning "sar -n SOCK failed"
+        
+        # Check for historical sar data
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "Historical Network Data (today):" | tee -a "$OUTPUT_FILE"
+        
+        local sar_data_found=false
+        for sar_dir in /var/log/sa /var/log/sysstat /var/log/sysstat/sa; do
+            if [[ -d "$sar_dir" ]]; then
+                local today=$(date +%d)
+                local sar_file="${sar_dir}/sa${today}"
+                
+                if [[ -f "$sar_file" ]]; then
+                    sar_data_found=true
+                    
+                    echo "" | tee -a "$OUTPUT_FILE"
+                    echo "  Network Throughput History (today):" | tee -a "$OUTPUT_FILE"
+                    sar -n DEV -f "$sar_file" 2>/dev/null | tail -30 | tee -a "$OUTPUT_FILE" || true
+                    
+                    echo "" | tee -a "$OUTPUT_FILE"
+                    echo "  TCP Statistics History (today):" | tee -a "$OUTPUT_FILE"
+                    sar -n TCP -f "$sar_file" 2>/dev/null | tail -20 | tee -a "$OUTPUT_FILE" || true
+                    
+                    break
+                fi
+            fi
+        done
+        
+        if [[ "$sar_data_found" == "false" ]]; then
+            echo "  No historical sar data found." | tee -a "$OUTPUT_FILE"
+        fi
+    else
+        echo "" | tee -a "$OUTPUT_FILE"
+        echo "sar not available - install sysstat for detailed network history" | tee -a "$OUTPUT_FILE"
     fi
     
     # Socket statistics

@@ -1,17 +1,18 @@
-# Linux Performance Forensic Tools
+# Linux & FreeBSD Performance Forensic Tools
 
 ## Overview
 
-A comprehensive Bash-based diagnostic tool for Linux servers that automatically detects performance bottlenecks and can create AWS Support cases with detailed forensic data. **Originally created for AWS DMS migrations - run this on your SOURCE DATABASE SERVER.** Now useful for any Linux performance troubleshooting scenario. Uses only open-source utilities and automatically installs missing dependencies when possible.
+A comprehensive Bash-based diagnostic tool for Linux and FreeBSD servers that automatically detects performance bottlenecks and can create AWS Support cases with detailed forensic data. **Originally created for AWS DMS migrations - run this on your SOURCE DATABASE SERVER.** Now useful for any Linux/FreeBSD performance troubleshooting scenario. Uses only open-source utilities and automatically installs missing dependencies when possible.
 
 **Key Features:**
 - ✅ Comprehensive performance forensics (CPU, Memory, Disk, Network, Database)
 - ✅ **Storage profiling** (topology, tiering, cloud storage, SMART health, capacity analysis, SAN/NAS detection)
 - ✅ **AWS DMS SOURCE DATABASE diagnostics** (binary logging, replication lag, CloudWatch agent, connection analysis)
 - ✅ Automated bottleneck detection
-- ✅ **Automatic dependency installation** (Debian/Ubuntu, RHEL/CentOS/Amazon Linux, SUSE, Arch, Alpine)
+- ✅ **Automatic dependency installation** (Debian/Ubuntu, RHEL/CentOS/Amazon Linux, SUSE, Arch, Alpine, FreeBSD)
 - ✅ **Version-aware OS detection** (auto-selects correct tools and packages per distro version)
 - ✅ Multi-distro support with intelligent fallbacks
+- ✅ **FreeBSD support** (GEOM, ZFS, gpart, camcontrol, pkg package manager)
 - ✅ CPU forensics (load average, context switches, steal time, thread analysis)
 - ✅ Memory forensics (OOM detection, swap analysis, page faults, slab memory, leak detection)
 - ✅ Disk I/O testing (usage, wait times, read/write performance, iotop support, D state detection)
@@ -25,7 +26,7 @@ A comprehensive Bash-based diagnostic tool for Linux servers that automatically 
 ## 🚀 **Quick Start**
 
 ### **Prerequisites**
-- Linux/Unix server (see supported OS list below)
+- Linux or FreeBSD server (see supported OS list below)
 - Root or sudo privileges
 - Bash shell (script will auto-detect and provide instructions if missing)
 - AWS CLI (optional, for support case creation)
@@ -46,6 +47,7 @@ A comprehensive Bash-based diagnostic tool for Linux servers that automatically 
 - openSUSE Leap, Tumbleweed
 - Arch Linux, Manjaro (pacman)
 - Alpine Linux (apk)
+- FreeBSD 12, 13, 14+ (pkg)
 
 **Note:** The script automatically detects your OS **and version**, then selects the correct package manager and package names. For example, RHEL 8+ uses `dnf` while RHEL 7 uses `yum`, and iSCSI tools are named differently across distros (`open-iscsi` vs `iscsi-initiator-utils`).
 
@@ -86,10 +88,12 @@ sudo ./invoke-linux-forensics.sh
 
 **CPU Forensics:**
 - Load average analysis (per-core calculation)
-- CPU utilization sampling (10-second average)
+- CPU utilization sampling (10-second average via mpstat)
 - Context switch rate monitoring
 - CPU steal time detection (hypervisor contention)
 - Top CPU-consuming processes
+- **SAR CPU analysis:** Real-time sampling (sar -u, sar -q, sar -P ALL)
+- **Historical CPU data:** Automatic detection of /var/log/sa data
 
 **Memory Forensics:**
 - Memory usage and availability analysis
@@ -101,13 +105,17 @@ sudo ./invoke-linux-forensics.sh
 - Memory leak candidate identification
 - Huge pages status
 - Top memory-consuming processes
+- **SAR memory analysis:** Real-time sampling (sar -r, sar -S, sar -B)
+- **Historical memory data:** Automatic detection of /var/log/sa data
 
 **Disk I/O Forensics:**
 - Filesystem usage monitoring
-- I/O wait time analysis
+- I/O wait time analysis (iostat)
 - Read/write performance testing (dd-based)
 - Dropped I/O detection
 - Per-device statistics
+- **SAR disk analysis:** Real-time sampling (sar -b, sar -d, sar -dp)
+- **Historical disk I/O data:** Automatic detection of /var/log/sa data
 
 **Storage Profiling:**
 - **Partition scheme analysis** (GPT vs MBR with >2TB warnings)
@@ -149,6 +157,8 @@ sudo ./invoke-linux-forensics.sh
 - Socket memory usage
 - Network throughput analysis
 - Buffer/queue settings
+- **SAR network analysis:** Real-time sampling (sar -n DEV/EDEV/TCP/ETCP/SOCK)
+- **Historical network data:** Automatic detection of /var/log/sa data
 
 **Bottleneck Detection:**
 - Automatically identifies performance issues
@@ -573,6 +583,11 @@ zypper install bash
 pacman -S bash
 ```
 
+**FreeBSD:**
+```bash
+pkg install bash
+```
+
 </details>
 
 <details>
@@ -618,38 +633,58 @@ Check the output for specific guidance based on your system.
 
 The script automatically installs storage-related tools when needed. Tools are only installed if the related subsystem is detected (e.g., LVM tools only if `/dev/mapper` exists).
 
-| Tool | Purpose | Package (Debian/Ubuntu) | Package (RHEL/CentOS) |
-|------|---------|-------------------------|----------------------|
-| smartctl | SMART health monitoring | smartmontools | smartmontools |
-| nvme | NVMe device management | nvme-cli | nvme-cli |
-| lsblk | Block device listing | util-linux | util-linux |
-| pvs/vgs/lvs | LVM information | lvm2 | lvm2 |
-| mdadm | Software RAID management | mdadm | mdadm |
-| iscsiadm | iSCSI initiator | open-iscsi | iscsi-initiator-utils |
-| multipath | Multipath I/O | multipath-tools | device-mapper-multipath |
-| fio | I/O benchmarking | fio | fio |
-| e4defrag | ext4 fragmentation | e2fsprogs | e2fsprogs |
-| xfs_db | XFS analysis | xfsprogs | xfsprogs |
-| blkid | Partition type detection | util-linux | util-linux |
-| mokutil | Secure Boot status | mokutil | mokutil |
+| Tool | Purpose | Package (Debian/Ubuntu) | Package (RHEL/CentOS) | Package (FreeBSD) |
+|------|---------|-------------------------|----------------------|-------------------|
+| smartctl | SMART health monitoring | smartmontools | smartmontools | sysutils/smartmontools |
+| nvme | NVMe device management | nvme-cli | nvme-cli | sysutils/nvme-cli |
+| lsblk | Block device listing | util-linux | util-linux | N/A (use geom) |
+| pvs/vgs/lvs | LVM information | lvm2 | lvm2 | N/A (use GEOM/ZFS) |
+| mdadm | Software RAID management | mdadm | mdadm | N/A (use gmirror/graid) |
+| iscsiadm | iSCSI initiator | open-iscsi | iscsi-initiator-utils | net/iscsi-initiator-utils |
+| multipath | Multipath I/O | multipath-tools | device-mapper-multipath | sysutils/mpath-tools |
+| fio | I/O benchmarking | fio | fio | benchmarks/fio |
+| e4defrag | ext4 fragmentation | e2fsprogs | e2fsprogs | N/A |
+| xfs_db | XFS analysis | xfsprogs | xfsprogs | N/A |
+| blkid | Partition type detection | util-linux | util-linux | N/A (use gpart) |
+| mokutil | Secure Boot status | mokutil | mokutil | N/A |
+
+**FreeBSD-Specific Tools (built-in or auto-installed):**
+| Tool | Purpose |
+|------|---------|
+| geom | GEOM disk subsystem management |
+| gpart | Partition table manipulation |
+| camcontrol | CAM (SCSI/SATA) device control |
+| zpool/zfs | ZFS pool and filesystem management |
+| gmirror | GEOM software mirroring |
+| graid | GEOM software RAID |
 
 **Partition Scheme Detection:**
 - **GPT** (GUID Partition Table) - Modern, UEFI, supports >2TB
 - **MBR** (msdos) - Legacy, BIOS, 2TB limit per partition
+- **BSD Disklabel** (FreeBSD) - Traditional BSD partitioning
 - Warns if MBR is used on disks >2TB
 
 **Partition Alignment Analysis:**
+
+*Linux:*
 - Reads partition start sector from `/sys/block/*/start`
 - Calculates offset in bytes using hardware sector size
+- Detects storage type from `/sys/block/*/queue/rotational` and transport
+
+*FreeBSD:*
+- Reads partition layout from `gpart show`
+- Detects storage type from `camcontrol identify`
+- Checks ZFS ashift values for pool alignment
+
+*Both:*
 - Checks 4K (4096 byte) alignment - minimum for modern storage
 - Checks 1MB (1048576 byte) alignment - optimal for SSD/SAN
-- Detects storage type from `/sys/block/*/queue/rotational` and transport
 - Severity based on storage type:
   - **SSD/NVMe**: High severity (30-50% performance loss)
   - **SAN (iSCSI/FC/SAS)**: High severity (30-50% loss + I/O amplification)
   - **Cloud (vd*/xvd*)**: High severity (typically SSD-backed)
   - **HDD**: Medium severity (10-20% loss from read-modify-write)
-- Common cause: Partitions created on pre-2010 systems (sector 63 start)
+- Common cause: Partitions created on older systems
 
 **Partition Type Detection:**
 - EFI System Partition (ESP) - UEFI boot
@@ -686,6 +721,71 @@ sudo pacman -S smartmontools nvme-cli lvm2 fio multipath-tools open-iscsi
 
 # Alpine Linux
 sudo apk add smartmontools nvme-cli lvm2 fio
+
+# FreeBSD
+sudo pkg install sysutils/smartmontools sysutils/nvme-cli benchmarks/fio
+```
+
+</details>
+
+<details>
+<summary><strong>SAR/Sysstat Historical Data Collection</strong></summary>
+
+The script automatically detects and displays historical sar data if sysstat data collection is enabled. This provides valuable trending information to identify when performance issues started.
+
+**SAR Data Used:**
+
+| Command | Data | Purpose |
+|---------|------|---------|
+| `sar -u` | CPU utilization | CPU usage trends |
+| `sar -q` | Run queue, load average | System load trends |
+| `sar -P ALL` | Per-CPU statistics | CPU imbalance detection |
+| `sar -r` | Memory utilization | Memory usage trends |
+| `sar -S` | Swap statistics | Swap activity trends |
+| `sar -B` | Paging statistics | Memory pressure trends |
+| `sar -b` | I/O transfer rates | Overall I/O trends |
+| `sar -d` | Block device I/O | Per-disk I/O trends |
+| `sar -n DEV` | Network device stats | Network throughput trends |
+| `sar -n EDEV` | Network errors | Network error trends |
+| `sar -n TCP` | TCP statistics | Connection trends |
+| `sar -n ETCP` | TCP errors | TCP error trends |
+| `sar -n SOCK` | Socket statistics | Socket usage trends |
+
+**Enable Historical Data Collection:**
+
+```bash
+# Debian/Ubuntu
+sudo apt-get install sysstat
+sudo systemctl enable --now sysstat
+
+# RHEL/CentOS/Fedora
+sudo dnf install sysstat   # or yum on older systems
+sudo systemctl enable --now sysstat
+
+# SUSE/openSUSE
+sudo zypper install sysstat
+sudo systemctl enable --now sysstat
+
+# FreeBSD
+sudo pkg install sysutils/sysstat
+# Add to /etc/crontab: */10 * * * * root /usr/local/lib/sa/sa1 1 1
+```
+
+**Data Locations:**
+- `/var/log/sa/saDD` (RHEL/CentOS/Fedora)
+- `/var/log/sysstat/saDD` (Debian/Ubuntu)
+- Where DD = day of month (01-31)
+
+**View Historical Data Manually:**
+```bash
+# Today's CPU history
+sar -u -f /var/log/sa/sa$(date +%d)
+
+# Yesterday's memory history
+sar -r -f /var/log/sa/sa$(date -d yesterday +%d)
+
+# Specific time range
+sar -u -s 09:00:00 -e 17:00:00 -f /var/log/sa/sa15
 ```
 
 </details>
@@ -713,9 +813,9 @@ For AWS-specific issues, the tool can automatically create support cases with di
 
 - This tool requires root/sudo privileges
 - Disk testing may impact system performance temporarily
-- **Automatic package installation** works on Debian/Ubuntu, RHEL/CentOS/Amazon Linux, SUSE, Arch, and Alpine
+- **Automatic package installation** works on Debian/Ubuntu, RHEL/CentOS/Amazon Linux, SUSE, Arch, Alpine, and FreeBSD
 - Script uses **graceful degradation** - continues with available tools if some are missing
-- Tested on Ubuntu 18.04+, RHEL 7+, Amazon Linux 2/2023, CentOS 7+, Debian 9+, Rocky Linux 8+, AlmaLinux 8+
+- Tested on Ubuntu 18.04+, RHEL 7+, Amazon Linux 2/2023, CentOS 7+, Debian 9+, Rocky Linux 8+, AlmaLinux 8+, FreeBSD 12+
 - Works on AWS EC2, Azure VMs, GCP Compute, on-premises, and other cloud providers
 - Uses only open-source utilities (no proprietary tools required)
 - **No warranty or official support provided** - use at your own discretion
@@ -761,6 +861,12 @@ For AWS-specific issues, the tool can automatically create support cases with di
 
 ## 📝 **Version History**
 
+- **v1.2** (February 2026) - Added FreeBSD support
+  - FreeBSD 12, 13, 14+ with pkg package manager
+  - GEOM storage subsystem (gpart, geom, camcontrol)
+  - ZFS pool alignment (ashift) analysis
+  - BSD disklabel detection
+  - FreeBSD-specific package mappings
 - **v1.1** (February 2026) - Added comprehensive storage profiling, improved OS version detection, expanded distro support (Arch, Alpine, Oracle Linux), automatic storage tool installation
 - **v1.0** (January 2026) - Initial release with comprehensive forensics and AWS Support integration
 
