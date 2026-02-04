@@ -55,7 +55,7 @@ A comprehensive Bash-based diagnostic tool for Linux and FreeBSD servers that au
 
 1. **Clone the repository:**
 ```bash
-git clone https://gitlab.aws.dev/arsanmig/linux-forensics.git
+git clone https://github.com/arsanmiguel/linux-forensics.git
 cd linux-forensics
 ```
 
