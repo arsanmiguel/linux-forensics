@@ -51,6 +51,7 @@ BOTTLENECKS=()
 DISTRO=""
 PACKAGE_MANAGER=""
 MISSING_PACKAGES=()
+IS_CONTAINER=false
 
 # Colors
 RED='\033[0;31m'
@@ -170,6 +171,70 @@ detect_os() {
     esac
 }
 
+#############################################################################
+# Container Detection
+#############################################################################
+
+detect_container() {
+    # Detect if running inside a container (Docker, Podman, LXC, etc.)
+    # Sets IS_CONTAINER=true if container environment detected
+    
+    IS_CONTAINER=false
+    CONTAINER_TYPE=""
+    
+    # Check for Docker
+    if [[ -f /.dockerenv ]]; then
+        IS_CONTAINER=true
+        CONTAINER_TYPE="docker"
+        return 0
+    fi
+    
+    # Check cgroup for docker/lxc/podman
+    if [[ -f /proc/1/cgroup ]]; then
+        if grep -qE "(docker|lxc|kubepods|podman)" /proc/1/cgroup 2>/dev/null; then
+            IS_CONTAINER=true
+            if grep -q "docker" /proc/1/cgroup 2>/dev/null; then
+                CONTAINER_TYPE="docker"
+            elif grep -q "lxc" /proc/1/cgroup 2>/dev/null; then
+                CONTAINER_TYPE="lxc"
+            elif grep -q "podman" /proc/1/cgroup 2>/dev/null; then
+                CONTAINER_TYPE="podman"
+            elif grep -q "kubepods" /proc/1/cgroup 2>/dev/null; then
+                CONTAINER_TYPE="kubernetes"
+            fi
+            return 0
+        fi
+    fi
+    
+    # Check for container-specific environment variables
+    if [[ -n "${container:-}" ]] || [[ -n "${KUBERNETES_SERVICE_HOST:-}" ]]; then
+        IS_CONTAINER=true
+        CONTAINER_TYPE="${container:-kubernetes}"
+        return 0
+    fi
+    
+    # Check for systemd-nspawn
+    if [[ -f /run/systemd/container ]]; then
+        IS_CONTAINER=true
+        CONTAINER_TYPE=$(cat /run/systemd/container 2>/dev/null || echo "systemd-nspawn")
+        return 0
+    fi
+    
+    # Check if /proc/1/sched shows init (bare metal) or something else (container)
+    if [[ -f /proc/1/sched ]]; then
+        local sched_name=$(head -1 /proc/1/sched 2>/dev/null | cut -d'(' -f1 | tr -d ' ')
+        if [[ "$sched_name" != "init" && "$sched_name" != "systemd" ]]; then
+            IS_CONTAINER=true
+            CONTAINER_TYPE="unknown"
+            return 0
+        fi
+    fi
+    
+    # Not a container - return 0 since this function's job is to set IS_CONTAINER
+    # (returning 1 would trigger set -e exit)
+    return 0
+}
+
 diagnose_package_install_failure() {
     local package="$1"
     
@@ -244,8 +309,106 @@ diagnose_package_install_failure() {
     echo "" | tee -a "$OUTPUT_FILE"
 }
 
+#############################################################################
+# EPEL Repository Management (RHEL-based systems)
+#############################################################################
+
+ensure_epel_repository() {
+    # Only relevant for RHEL-based systems using yum/dnf
+    # Skip for Amazon Linux 2023+ (doesn't use EPEL, has its own repos)
+    case "$DISTRO" in
+        amzn)
+            if [[ -n "$OS_VERSION_MAJOR" ]] && (( OS_VERSION_MAJOR >= 2023 )); then
+                log_info "Amazon Linux 2023+ detected - skipping EPEL (not needed)"
+                return 0
+            fi
+            ;;
+        rhel|centos|rocky|alma|ol)
+            ;;
+        *)
+            # Not a RHEL-based system, skip
+            return 0
+            ;;
+    esac
+    
+    # Check if EPEL is already enabled
+    if [[ "$PACKAGE_MANAGER" == "dnf" ]]; then
+        if dnf repolist enabled 2>/dev/null | grep -qi "epel"; then
+            log_info "EPEL repository already enabled"
+            return 0
+        fi
+    elif [[ "$PACKAGE_MANAGER" == "yum" ]]; then
+        if yum repolist enabled 2>/dev/null | grep -qi "epel"; then
+            log_info "EPEL repository already enabled"
+            return 0
+        fi
+    fi
+    
+    log_info "EPEL repository not found - attempting to enable..."
+    
+    # Try to install epel-release
+    local epel_installed=false
+    
+    # Method 1: Try installing epel-release directly (works on most RHEL clones)
+    if [[ "$PACKAGE_MANAGER" == "dnf" ]]; then
+        if dnf install -y epel-release >/dev/null 2>&1; then
+            epel_installed=true
+        fi
+    elif [[ "$PACKAGE_MANAGER" == "yum" ]]; then
+        if yum install -y epel-release >/dev/null 2>&1; then
+            epel_installed=true
+        fi
+    fi
+    
+    # Method 2: For RHEL proper, may need to enable via subscription-manager or direct RPM
+    if [[ "$epel_installed" == "false" ]] && [[ "$DISTRO" == "rhel" ]]; then
+        log_info "Trying RHEL-specific EPEL installation..."
+        
+        # Determine RHEL major version
+        local rhel_major="${OS_VERSION_MAJOR:-8}"
+        
+        # Try subscription-manager first (for registered RHEL systems)
+        if command -v subscription-manager >/dev/null 2>&1; then
+            subscription-manager repos --enable "codeready-builder-for-rhel-${rhel_major}-$(uname -m)-rpms" >/dev/null 2>&1 || true
+        fi
+        
+        # Install EPEL from Fedora project
+        local epel_url="https://dl.fedoraproject.org/pub/epel/epel-release-latest-${rhel_major}.noarch.rpm"
+        if rpm -Uvh "$epel_url" >/dev/null 2>&1; then
+            epel_installed=true
+        fi
+    fi
+    
+    # Method 3: For Amazon Linux 2
+    if [[ "$epel_installed" == "false" ]] && [[ "$DISTRO" == "amzn" ]]; then
+        if amazon-linux-extras install epel -y >/dev/null 2>&1; then
+            epel_installed=true
+        fi
+    fi
+    
+    # Verify EPEL is now available
+    if [[ "$epel_installed" == "true" ]]; then
+        # Refresh repo cache
+        $PACKAGE_MANAGER makecache >/dev/null 2>&1 || true
+        
+        if $PACKAGE_MANAGER repolist enabled 2>/dev/null | grep -qi "epel"; then
+            log_success "EPEL repository enabled successfully"
+            return 0
+        fi
+    fi
+    
+    log_warning "Could not enable EPEL repository - some tools (htop, btop, glances, fio) may not be available"
+    log_warning "Manual install: dnf install epel-release (or yum install epel-release)"
+    return 1
+}
+
 install_package() {
     local package="$1"
+    
+    # Handle skip packages (tools not available/needed on this OS)
+    if [[ "$package" == "skip" ]] || [[ "$package" == "base" ]] || [[ -z "$package" ]]; then
+        return 1
+    fi
     
     log_info "Installing ${package}..."
     
@@ -312,7 +475,7 @@ get_package_name() {
                 sles|opensuse*) pkg="sysstat" ;;
                 arch|manjaro) pkg="sysstat" ;;
                 alpine) pkg="sysstat" ;;
-                freebsd) pkg="sysutils/sysstat" ;;
+                freebsd) pkg="skip" ;;  # FreeBSD uses vmstat/systat instead
                 *) pkg="sysstat" ;;
             esac
             ;;
@@ -374,7 +537,7 @@ get_package_name() {
                 sles|opensuse*) pkg="util-linux" ;;
                 arch|manjaro) pkg="util-linux" ;;
                 alpine) pkg="util-linux" ;;
-                freebsd) pkg="none" ;;  # FreeBSD uses geom/gpart/camcontrol instead
+                freebsd) pkg="skip" ;;  # FreeBSD uses geom/gpart/camcontrol instead
                 *) pkg="util-linux" ;;
             esac
             ;;
@@ -385,7 +548,7 @@ get_package_name() {
                 sles|opensuse*) pkg="lvm2" ;;
                 arch|manjaro) pkg="lvm2" ;;
                 alpine) pkg="lvm2" ;;
-                freebsd) pkg="none" ;;  # FreeBSD uses GEOM/ZFS instead of LVM
+                freebsd) pkg="skip" ;;  # FreeBSD uses GEOM/ZFS instead of LVM
                 *) pkg="lvm2" ;;
             esac
             ;;
@@ -396,7 +559,7 @@ get_package_name() {
                 sles|opensuse*) pkg="mdadm" ;;
                 arch|manjaro) pkg="mdadm" ;;
                 alpine) pkg="mdadm" ;;
-                freebsd) pkg="none" ;;  # FreeBSD uses GEOM (gmirror/graid) instead of mdadm
+                freebsd) pkg="skip" ;;  # FreeBSD uses GEOM (gmirror/graid) instead of mdadm
                 *) pkg="mdadm" ;;
             esac
             ;;
@@ -505,6 +668,14 @@ ensure_tool() {
     
     local pkg=$(get_package_name "$tool")
     
+    # Handle tools that should be skipped on this OS
+    if [[ "$pkg" == "skip" ]]; then
+        if [[ "$optional" != "true" ]]; then
+            log_info "Tool '$tool' not available on ${DISTRO} (using native alternatives)"
+        fi
+        return 1
+    fi
+    
     if [[ "$optional" == "true" ]]; then
         log_info "Optional tool '$tool' not found, attempting to install ($pkg)..."
     else
@@ -526,6 +697,29 @@ ensure_tool() {
 
 check_and_install_dependencies() {
     log_info "Checking required utilities for ${OS_NAME:-$DISTRO}..."
+    
+    # Ensure EPEL repository is available on RHEL-based systems
+    # (required for htop, btop, glances, fio, and other enhanced tools)
+    # Note: || true prevents set -e from exiting if EPEL can't be enabled
+    ensure_epel_repository || true
+    
+    # OS-specific pre-checks for missing base packages
+    case "$DISTRO" in
+        sles|opensuse*)
+            # openSUSE may not have net-tools by default
+            if ! command -v netstat >/dev/null 2>&1; then
+                log_info "Installing net-tools for openSUSE..."
+                install_package "net-tools" || true
+            fi
+            ;;
+        alpine)
+            # Alpine may not have util-linux (for lsblk, etc.) by default
+            if ! command -v lsblk >/dev/null 2>&1; then
+                log_info "Installing util-linux for Alpine..."
+                install_package "util-linux" || true
+            fi
+            ;;
+    esac
     
     # Core performance monitoring tools
     local core_tools=("mpstat" "iostat" "vmstat" "netstat" "bc")
@@ -562,6 +756,12 @@ check_and_install_dependencies() {
     # Check and install enhanced profiling tools
     log_info "Checking enhanced profiling tools..."
     for tool in "${enhanced_tools[@]}"; do
+        # Skip btop on Amazon Linux 2023+ (not available in repos)
+        if [[ "$tool" == "btop" ]] && [[ "$DISTRO" == "amzn" ]] && [[ -n "$OS_VERSION_MAJOR" ]] && (( OS_VERSION_MAJOR >= 2023 )); then
+            log_info "Skipping btop on Amazon Linux 2023+ (not in repos)"
+            continue
+        fi
+        
         if ! command -v "$tool" >/dev/null 2>&1; then
             log_info "${tool} not found - attempting to install..."
             
@@ -697,20 +897,57 @@ collect_system_info() {
     log_info "Gathering system information..."
     
     # Basic system info
-    echo "Hostname: $(hostname)" | tee -a "$OUTPUT_FILE"
+    local sys_hostname
+    if command -v hostname >/dev/null 2>&1; then
+        sys_hostname=$(hostname)
+    elif [[ -f /etc/hostname ]]; then
+        sys_hostname=$(cat /etc/hostname)
+    elif [[ -f /proc/sys/kernel/hostname ]]; then
+        sys_hostname=$(cat /proc/sys/kernel/hostname)
+    else
+        sys_hostname="unknown"
+    fi
+    echo "Hostname: ${sys_hostname}" | tee -a "$OUTPUT_FILE"
     echo "Kernel: $(uname -r)" | tee -a "$OUTPUT_FILE"
     echo "OS: $(cat /etc/os-release | grep PRETTY_NAME | cut -d'"' -f2)" | tee -a "$OUTPUT_FILE"
     echo "Architecture: $(uname -m)" | tee -a "$OUTPUT_FILE"
-    echo "Uptime: $(uptime -p)" | tee -a "$OUTPUT_FILE"
     
-    # CPU info
-    local cpu_model=$(grep "model name" /proc/cpuinfo | head -1 | cut -d: -f2 | xargs)
-    local cpu_cores=$(nproc)
+    # Get uptime - handle systems where uptime -p is not supported (e.g., openSUSE)
+    local uptime_str
+    if uptime -p >/dev/null 2>&1; then
+        uptime_str=$(uptime -p)
+    else
+        # Fallback: parse standard uptime output
+        uptime_str=$(uptime | sed 's/.*up /up /' | sed 's/,.*load.*//' | sed 's/,.*user.*//')
+    fi
+    echo "Uptime: ${uptime_str}" | tee -a "$OUTPUT_FILE"
+    
+    # CPU info - handle FreeBSD vs Linux
+    local cpu_model
+    local cpu_cores
+    if [[ "$DISTRO" == "freebsd" ]]; then
+        cpu_model=$(sysctl -n hw.model 2>/dev/null || echo "Unknown")
+        cpu_cores=$(sysctl -n hw.ncpu 2>/dev/null || echo "1")
+    else
+        cpu_model=$(grep "model name" /proc/cpuinfo 2>/dev/null | head -1 | cut -d: -f2 | xargs || echo "Unknown")
+        cpu_cores=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo "1")
+    fi
     echo "CPU: ${cpu_model}" | tee -a "$OUTPUT_FILE"
     echo "CPU Cores: ${cpu_cores}" | tee -a "$OUTPUT_FILE"
     
-    # Memory info
-    local total_mem=$(free -h | grep Mem | awk '{print $2}')
+    # Memory info - handle FreeBSD vs Linux
+    local total_mem
+    if [[ "$DISTRO" == "freebsd" ]]; then
+        local mem_bytes=$(sysctl -n hw.physmem 2>/dev/null || echo "0")
+        if [[ "$mem_bytes" -gt 0 ]]; then
+            total_mem=$(echo "scale=1; $mem_bytes / 1024 / 1024 / 1024" | bc 2>/dev/null || echo "$((mem_bytes / 1024 / 1024 / 1024))")
+            total_mem="${total_mem}G"
+        else
+            total_mem="Unknown"
+        fi
+    else
+        total_mem=$(free -h 2>/dev/null | grep Mem | awk '{print $2}' || echo "Unknown")
+    fi
     echo "Total Memory: ${total_mem}" | tee -a "$OUTPUT_FILE"
     
     # Check if running on EC2
@@ -738,9 +975,10 @@ analyze_glances_overview() {
         
         log_info "Capturing glances system snapshot..."
         
-        # Glances stdout mode with 1 iteration
+        # Glances stdout mode - capture 3 samples over 6 seconds then stop
+        # Using timeout because --stdout mode runs indefinitely
         echo "System Snapshot (glances --stdout cpu,mem,load,diskio,network):" | tee -a "$OUTPUT_FILE"
-        glances --stdout cpu,mem,load,diskio,network -1 2>/dev/null | tee -a "$OUTPUT_FILE" || \
+        timeout 10 glances --stdout cpu,mem,load,diskio,network --time 2 2>/dev/null | head -50 | tee -a "$OUTPUT_FILE" || \
         echo "  glances stdout capture not available" | tee -a "$OUTPUT_FILE"
         
         # Export to JSON for detailed analysis if in deep mode
@@ -748,7 +986,7 @@ analyze_glances_overview() {
             local glances_json="/tmp/glances_snapshot_$(date +%Y%m%d_%H%M%S).json"
             echo "" | tee -a "$OUTPUT_FILE"
             echo "Exporting detailed snapshot to: ${glances_json}" | tee -a "$OUTPUT_FILE"
-            glances --export json --export-json-file "$glances_json" -1 2>/dev/null || true
+            timeout 10 glances --export json --export-json-file "$glances_json" --time 2 2>/dev/null || true
             
             if [[ -f "$glances_json" ]]; then
                 echo "  JSON export successful - attach to support case for detailed analysis" | tee -a "$OUTPUT_FILE"
@@ -780,27 +1018,48 @@ analyze_cpu() {
     
     log_info "Analyzing CPU performance..."
     
-    # Load average
-    local load_avg=$(uptime | awk -F'load average:' '{print $2}' | xargs)
-    local load_1min=$(echo "$load_avg" | cut -d',' -f1 | xargs)
-    local cpu_cores=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo "1")
-    
-    if command -v bc >/dev/null 2>&1; then
-        local load_per_core=$(echo "scale=2; $load_1min / $cpu_cores" | bc)
+    # Load average - FreeBSD uses "load averages:" (plural), Linux uses "load average:"
+    local load_avg
+    if [[ "$DISTRO" == "freebsd" ]]; then
+        load_avg=$(uptime | awk -F'load averages:' '{print $2}' | xargs 2>/dev/null)
+        # FreeBSD also has sysctl alternative
+        if [[ -z "$load_avg" ]]; then
+            load_avg=$(sysctl -n vm.loadavg 2>/dev/null | tr -d '{}' | xargs)
+        fi
     else
-        local load_per_core=$(awk "BEGIN {printf \"%.2f\", $load_1min / $cpu_cores}")
+        load_avg=$(uptime | awk -F'load average:' '{print $2}' | xargs 2>/dev/null)
+    fi
+    local load_1min=$(echo "$load_avg" | cut -d',' -f1 | xargs 2>/dev/null | sed 's/^[[:space:]]*//')
+    local cpu_cores
+    if [[ "$DISTRO" == "freebsd" ]]; then
+        cpu_cores=$(sysctl -n hw.ncpu 2>/dev/null || echo "1")
+    else
+        cpu_cores=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo "1")
+    fi
+    
+    # Validate load_1min is a number before calculations
+    local load_per_core="N/A"
+    if [[ -n "$load_1min" ]] && [[ "$load_1min" =~ ^[0-9]+\.?[0-9]*$ ]]; then
+        if command -v bc >/dev/null 2>&1; then
+            load_per_core=$(echo "scale=2; $load_1min / $cpu_cores" | bc 2>/dev/null || echo "N/A")
+        else
+            load_per_core=$(awk "BEGIN {printf \"%.2f\", $load_1min / $cpu_cores}" 2>/dev/null || echo "N/A")
+        fi
     fi
     
     echo "Load Average: ${load_avg}" | tee -a "$OUTPUT_FILE"
     echo "Load per Core: ${load_per_core}" | tee -a "$OUTPUT_FILE"
     
-    if command -v bc >/dev/null 2>&1; then
-        if (( $(echo "$load_per_core > 1.0" | bc -l) )); then
-            log_bottleneck "CPU" "High load average" "${load_per_core} per core" "1.0 per core" "High"
-        fi
-    else
-        if (( $(awk "BEGIN {print ($load_per_core > 1.0)}") )); then
-            log_bottleneck "CPU" "High load average" "${load_per_core} per core" "1.0 per core" "High"
+    # Check for high load (only if we have a valid number)
+    if [[ "$load_per_core" != "N/A" ]] && [[ "$load_per_core" =~ ^[0-9]+\.?[0-9]*$ ]]; then
+        if command -v bc >/dev/null 2>&1; then
+            if (( $(echo "$load_per_core > 1.0" | bc -l 2>/dev/null || echo 0) )); then
+                log_bottleneck "CPU" "High load average" "${load_per_core} per core" "1.0 per core" "High"
+            fi
+        else
+            if (( $(awk "BEGIN {print ($load_per_core > 1.0)}" 2>/dev/null || echo 0) )); then
+                log_bottleneck "CPU" "High load average" "${load_per_core} per core" "1.0 per core" "High"
+            fi
         fi
     fi
     
@@ -815,11 +1074,21 @@ analyze_cpu() {
         fi
     else
         log_warning "mpstat not available, using top for CPU sampling..."
-        local cpu_idle=$(top -bn2 -d1 | grep "Cpu(s)" | tail -1 | awk '{print $8}' | sed 's/%id,//')
-        if command -v bc >/dev/null 2>&1; then
-            local cpu_usage=$(echo "scale=2; 100 - $cpu_idle" | bc)
+        local cpu_idle
+        if [[ "$DISTRO" == "freebsd" ]]; then
+            # FreeBSD: use vmstat for CPU idle
+            cpu_idle=$(vmstat 1 2 | tail -1 | awk '{print $NF}')
         else
-            local cpu_usage=$(awk "BEGIN {printf \"%.2f\", 100 - $cpu_idle}")
+            cpu_idle=$(top -bn2 -d1 2>/dev/null | grep "Cpu(s)" | tail -1 | awk '{print $8}' | sed 's/%id,//')
+        fi
+        if [[ -n "$cpu_idle" ]] && [[ "$cpu_idle" =~ ^[0-9]+\.?[0-9]*$ ]]; then
+            if command -v bc >/dev/null 2>&1; then
+                local cpu_usage=$(echo "scale=2; 100 - $cpu_idle" | bc)
+            else
+                local cpu_usage=$(awk "BEGIN {printf \"%.2f\", 100 - $cpu_idle}")
+            fi
+        else
+            local cpu_usage="N/A"
         fi
     fi
     
@@ -866,9 +1135,15 @@ analyze_cpu() {
     # Top CPU consumers
     echo "" | tee -a "$OUTPUT_FILE"
     echo "Top 10 CPU-consuming processes:" | tee -a "$OUTPUT_FILE"
-    ps aux --sort=-%cpu 2>/dev/null | head -11 | tail -10 | awk '{printf "  %-20s PID: %-8s CPU: %5s%% MEM: %5s%%\n", $11, $2, $3, $4}' | tee -a "$OUTPUT_FILE" || \
-    ps -eo comm,pid,pcpu,pmem --sort=-pcpu 2>/dev/null | head -11 | tail -10 | tee -a "$OUTPUT_FILE" || \
-    log_warning "Unable to list top CPU consumers"
+    if [[ "$DISTRO" == "freebsd" ]]; then
+        # FreeBSD ps syntax
+        ps -axo comm,pid,pcpu,pmem -r 2>/dev/null | head -11 | tail -10 | awk '{printf "  %-20s PID: %-8s CPU: %5s%% MEM: %5s%%\n", $1, $2, $3, $4}' | tee -a "$OUTPUT_FILE" || \
+        log_warning "Unable to list top CPU consumers"
+    else
+        ps aux --sort=-%cpu 2>/dev/null | head -11 | tail -10 | awk '{printf "  %-20s PID: %-8s CPU: %5s%% MEM: %5s%%\n", $11, $2, $3, $4}' | tee -a "$OUTPUT_FILE" || \
+        ps -eo comm,pid,pcpu,pmem --sort=-pcpu 2>/dev/null | head -11 | tail -10 | tee -a "$OUTPUT_FILE" || \
+        log_warning "Unable to list top CPU consumers"
+    fi
     
     # ==========================================================================
     # ENHANCED CPU PROFILING (htop/btop)
@@ -966,13 +1241,41 @@ analyze_memory() {
     
     log_info "Analyzing memory usage..."
     
-    # Memory statistics
-    local total_mem=$(free -m 2>/dev/null | grep Mem | awk '{print $2}')
-    local used_mem=$(free -m 2>/dev/null | grep Mem | awk '{print $3}')
-    local free_mem=$(free -m 2>/dev/null | grep Mem | awk '{print $4}')
-    local available_mem=$(free -m 2>/dev/null | grep Mem | awk '{print $7}')
+    # Memory statistics - handle FreeBSD vs Linux
+    local total_mem used_mem free_mem available_mem
     
-    if [[ -z "$total_mem" ]]; then
+    if [[ "$DISTRO" == "freebsd" ]]; then
+        # FreeBSD memory stats via sysctl
+        local physmem=$(sysctl -n hw.physmem 2>/dev/null || echo "0")
+        local pagesize=$(sysctl -n hw.pagesize 2>/dev/null || echo "4096")
+        local inactive=$(sysctl -n vm.stats.vm.v_inactive_count 2>/dev/null || echo "0")
+        local cache=$(sysctl -n vm.stats.vm.v_cache_count 2>/dev/null || echo "0")
+        local free_pages=$(sysctl -n vm.stats.vm.v_free_count 2>/dev/null || echo "0")
+        local active=$(sysctl -n vm.stats.vm.v_active_count 2>/dev/null || echo "0")
+        local wired=$(sysctl -n vm.stats.vm.v_wire_count 2>/dev/null || echo "0")
+        
+        # Convert to MB
+        total_mem=$((physmem / 1024 / 1024))
+        free_mem=$((free_pages * pagesize / 1024 / 1024))
+        local inactive_mem=$((inactive * pagesize / 1024 / 1024))
+        local cache_mem=$((cache * pagesize / 1024 / 1024))
+        # Available = free + inactive + cache (approximately)
+        available_mem=$((free_mem + inactive_mem + cache_mem))
+        used_mem=$((total_mem - available_mem))
+        
+        if [[ "$used_mem" -lt 0 ]]; then
+            used_mem=$((total_mem - free_mem))
+            available_mem=$free_mem
+        fi
+    else
+        # Linux memory stats via free
+        total_mem=$(free -m 2>/dev/null | grep Mem | awk '{print $2}')
+        used_mem=$(free -m 2>/dev/null | grep Mem | awk '{print $3}')
+        free_mem=$(free -m 2>/dev/null | grep Mem | awk '{print $4}')
+        available_mem=$(free -m 2>/dev/null | grep Mem | awk '{print $7}')
+    fi
+    
+    if [[ -z "$total_mem" ]] || [[ "$total_mem" == "0" ]]; then
         log_warning "Unable to get memory statistics"
         return
     fi
@@ -999,10 +1302,24 @@ analyze_memory() {
         fi
     fi
     
-    # Swap usage
-    local total_swap=$(free -m 2>/dev/null | grep Swap | awk '{print $2}')
+    # Swap usage - handle FreeBSD vs Linux
+    local total_swap used_swap
+    if [[ "$DISTRO" == "freebsd" ]]; then
+        # FreeBSD swap via swapinfo
+        local swap_info=$(swapinfo -m 2>/dev/null | tail -1)
+        if [[ -n "$swap_info" ]] && [[ "$swap_info" != *"Device"* ]]; then
+            total_swap=$(echo "$swap_info" | awk '{print $2}')
+            used_swap=$(echo "$swap_info" | awk '{print $3}')
+        else
+            total_swap=0
+            used_swap=0
+        fi
+    else
+        total_swap=$(free -m 2>/dev/null | grep Swap | awk '{print $2}')
+        used_swap=$(free -m 2>/dev/null | grep Swap | awk '{print $3}')
+    fi
+    
     if [[ -n "$total_swap" ]] && (( total_swap > 0 )); then
-        local used_swap=$(free -m 2>/dev/null | grep Swap | awk '{print $3}')
         if command -v bc >/dev/null 2>&1; then
             local swap_usage_pct=$(echo "scale=2; ($used_swap / $total_swap) * 100" | bc)
         else
@@ -1076,9 +1393,15 @@ analyze_memory() {
     # Top memory consumers
     echo "" | tee -a "$OUTPUT_FILE"
     echo "Top 10 memory-consuming processes:" | tee -a "$OUTPUT_FILE"
-    ps aux --sort=-%mem 2>/dev/null | head -11 | tail -10 | awk '{printf "  %-20s PID: %-8s MEM: %5s%% CPU: %5s%%\n", $11, $2, $4, $3}' | tee -a "$OUTPUT_FILE" || \
-    ps -eo comm,pid,pmem,pcpu --sort=-pmem 2>/dev/null | head -11 | tail -10 | tee -a "$OUTPUT_FILE" || \
-    log_warning "Unable to list top memory consumers"
+    if [[ "$DISTRO" == "freebsd" ]]; then
+        # FreeBSD ps syntax - sort by memory with -m
+        ps -axo comm,pid,pmem,pcpu -m 2>/dev/null | head -11 | tail -10 | awk '{printf "  %-20s PID: %-8s MEM: %5s%% CPU: %5s%%\n", $1, $2, $3, $4}' | tee -a "$OUTPUT_FILE" || \
+        log_warning "Unable to list top memory consumers"
+    else
+        ps aux --sort=-%mem 2>/dev/null | head -11 | tail -10 | awk '{printf "  %-20s PID: %-8s MEM: %5s%% CPU: %5s%%\n", $11, $2, $4, $3}' | tee -a "$OUTPUT_FILE" || \
+        ps -eo comm,pid,pmem,pcpu --sort=-pmem 2>/dev/null | head -11 | tail -10 | tee -a "$OUTPUT_FILE" || \
+        log_warning "Unable to list top memory consumers"
+    fi
     
     # Huge pages status
     if [[ -f /proc/meminfo ]]; then
@@ -1233,14 +1556,20 @@ analyze_disk() {
     
     # Disk I/O test (if in disk mode or deep mode)
     if [[ "$MODE" == "disk" ]] || [[ "$MODE" == "deep" ]]; then
-        if command -v dd >/dev/null 2>&1; then
+        # Skip direct I/O disk tests in containers (overlay filesystem doesn't support oflag=direct reliably)
+        if [[ "$IS_CONTAINER" == "true" ]]; then
+            echo "" | tee -a "$OUTPUT_FILE"
+            log_info "Container environment detected - skipping direct I/O disk speed tests"
+            echo "Disk Write Speed: N/A (container - direct I/O not supported)" | tee -a "$OUTPUT_FILE"
+            echo "Disk Read Speed: N/A (container - direct I/O not supported)" | tee -a "$OUTPUT_FILE"
+        elif command -v dd >/dev/null 2>&1; then
             echo "" | tee -a "$OUTPUT_FILE"
             log_info "Running disk write performance test..."
             
             local test_file="/tmp/forensics_disk_test_$$"
             local write_result=$(dd if=/dev/zero of="$test_file" bs=1M count=1024 oflag=direct 2>&1 || echo "failed")
             
-            if [[ "$write_result" != "failed" ]]; then
+            if [[ "$write_result" != "failed" ]] && [[ "$write_result" != *"Invalid argument"* ]]; then
                 local write_speed=$(echo "$write_result" | grep -oP '\d+\.?\d* MB/s' | head -1 || echo "N/A")
                 echo "Disk Write Speed: ${write_speed}" | tee -a "$OUTPUT_FILE"
                 
@@ -1253,10 +1582,12 @@ analyze_disk() {
                     echo "Disk Read Speed: ${read_speed}" | tee -a "$OUTPUT_FILE"
                 fi
             else
-                log_warning "Disk performance test failed"
+                log_warning "Disk performance test failed (direct I/O may not be supported on this filesystem)"
+                echo "Disk Write Speed: N/A" | tee -a "$OUTPUT_FILE"
+                echo "Disk Read Speed: N/A" | tee -a "$OUTPUT_FILE"
             fi
             
-            rm -f "$test_file"
+            rm -f "$test_file" 2>/dev/null || true
         else
             log_warning "dd command not available - skipping disk performance test"
         fi
@@ -1329,6 +1660,12 @@ analyze_storage_profile() {
     
     log_info "Performing comprehensive storage analysis..."
     log_info "OS: ${OS_NAME:-$DISTRO} (Version: ${OS_VERSION:-unknown})"
+    
+    # Container environment notice
+    if [[ "$IS_CONTAINER" == "true" ]]; then
+        log_info "Container environment detected - some storage tests may be limited"
+        echo "Note: Running in container (${CONTAINER_TYPE:-detected}). Hardware-level storage tests will be skipped." | tee -a "$OUTPUT_FILE"
+    fi
     
     # ==========================================================================
     # ENSURE STORAGE TOOLS ARE AVAILABLE
@@ -2100,14 +2437,24 @@ analyze_storage_profile() {
     echo "" | tee -a "$OUTPUT_FILE"
     echo "--- SMART HEALTH STATUS ---" | tee -a "$OUTPUT_FILE"
     
-    if command -v smartctl >/dev/null 2>&1; then
+    # Skip SMART tests in containers (no direct hardware access)
+    if [[ "$IS_CONTAINER" == "true" ]]; then
+        echo "  SMART tests skipped - not available in container environment" | tee -a "$OUTPUT_FILE"
+        echo "  Note: Container virtualized storage does not expose SMART data" | tee -a "$OUTPUT_FILE"
+    elif command -v smartctl >/dev/null 2>&1; then
+        local found_disk=false
         for disk in /dev/sd? /dev/nvme?n1; do
             [[ -b "$disk" ]] || continue
+            found_disk=true
             
             echo "" | tee -a "$OUTPUT_FILE"
             echo "SMART Status for $disk:" | tee -a "$OUTPUT_FILE"
             
-            local smart_health=$(smartctl -H "$disk" 2>/dev/null)
+            local smart_health=$(smartctl -H "$disk" 2>/dev/null || echo "Unable to read SMART data")
+            if [[ "$smart_health" == *"Unable to read"* ]] || [[ "$smart_health" == *"Permission denied"* ]]; then
+                echo "  Unable to read SMART data (may require root or direct hardware access)" | tee -a "$OUTPUT_FILE"
+                continue
+            fi
             echo "$smart_health" | grep -E "SMART overall-health|SMART Health Status" | tee -a "$OUTPUT_FILE"
             
             # Check for failing drive
@@ -2116,8 +2463,11 @@ analyze_storage_profile() {
             fi
             
             # Key SMART attributes
-            smartctl -A "$disk" 2>/dev/null | grep -E "Reallocated_Sector|Current_Pending_Sector|Offline_Uncorrectable|UDMA_CRC_Error|Wear_Leveling|Percentage_Used" | tee -a "$OUTPUT_FILE"
+            smartctl -A "$disk" 2>/dev/null | grep -E "Reallocated_Sector|Current_Pending_Sector|Offline_Uncorrectable|UDMA_CRC_Error|Wear_Leveling|Percentage_Used" | tee -a "$OUTPUT_FILE" || true
         done
+        if [[ "$found_disk" == "false" ]]; then
+            echo "  No physical disks found for SMART analysis" | tee -a "$OUTPUT_FILE"
+        fi
     else
         echo "  smartctl not installed - install smartmontools for SMART analysis" | tee -a "$OUTPUT_FILE"
         echo "  Install with: apt-get install smartmontools OR yum install smartmontools" | tee -a "$OUTPUT_FILE"
@@ -2151,7 +2501,12 @@ analyze_storage_profile() {
     # Top space consumers
     echo "" | tee -a "$OUTPUT_FILE"
     echo "Top 10 Directories by Size (/):" | tee -a "$OUTPUT_FILE"
-    du -hx --max-depth=1 / 2>/dev/null | sort -rh | head -11 | tee -a "$OUTPUT_FILE"
+    if [[ "$DISTRO" == "freebsd" ]]; then
+        # FreeBSD uses -d for depth
+        du -hx -d 1 / 2>/dev/null | sort -rh | head -11 | tee -a "$OUTPUT_FILE"
+    else
+        du -hx --max-depth=1 / 2>/dev/null | sort -rh | head -11 | tee -a "$OUTPUT_FILE"
+    fi
     
     # Large files detection
     echo "" | tee -a "$OUTPUT_FILE"
@@ -2259,23 +2614,41 @@ analyze_storage_profile() {
     echo "--- STORAGE PERFORMANCE BASELINE ---" | tee -a "$OUTPUT_FILE"
     
     if [[ "$MODE" == "deep" ]] || [[ "$MODE" == "disk" ]]; then
+        # Container environment notice for performance tests
+        if [[ "$IS_CONTAINER" == "true" ]]; then
+            log_info "Container environment - running buffered I/O tests (direct I/O not available)"
+            echo "  Note: Direct I/O tests skipped; using buffered I/O which measures overlay filesystem performance" | tee -a "$OUTPUT_FILE"
+        fi
+        
         log_info "Running storage performance baseline tests..."
         
         local test_dir="/tmp/storage_baseline_$$"
-        mkdir -p "$test_dir"
+        mkdir -p "$test_dir" 2>/dev/null || { log_warning "Cannot create test directory"; return 0; }
         
         # Sequential write test (1GB)
         echo "" | tee -a "$OUTPUT_FILE"
         echo "Sequential Write Test (1GB):" | tee -a "$OUTPUT_FILE"
-        local write_result=$(dd if=/dev/zero of="$test_dir/test_file" bs=1M count=1024 oflag=direct 2>&1)
-        local write_speed=$(echo "$write_result" | grep -oP '[\d.]+ [MGK]B/s' | tail -1)
+        
+        local write_result write_speed
+        if [[ "$IS_CONTAINER" == "true" ]]; then
+            # Use buffered I/O in containers (no oflag=direct)
+            write_result=$(dd if=/dev/zero of="$test_dir/test_file" bs=1M count=1024 2>&1) || true
+        else
+            # Try direct I/O first, fall back to buffered
+            write_result=$(dd if=/dev/zero of="$test_dir/test_file" bs=1M count=1024 oflag=direct 2>&1)
+            if [[ "$write_result" == *"Invalid argument"* ]]; then
+                log_info "Direct I/O not supported, falling back to buffered I/O"
+                write_result=$(dd if=/dev/zero of="$test_dir/test_file" bs=1M count=1024 2>&1) || true
+            fi
+        fi
+        write_speed=$(echo "$write_result" | grep -oP '[\d.]+ [MGK]B/s' | tail -1)
         echo "  Write Speed: ${write_speed:-N/A}" | tee -a "$OUTPUT_FILE"
         
         # Sequential read test
         echo "" | tee -a "$OUTPUT_FILE"
         echo "Sequential Read Test (1GB):" | tee -a "$OUTPUT_FILE"
         sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
-        local read_result=$(dd if="$test_dir/test_file" of=/dev/null bs=1M 2>&1)
+        local read_result=$(dd if="$test_dir/test_file" of=/dev/null bs=1M 2>&1) || true
         local read_speed=$(echo "$read_result" | grep -oP '[\d.]+ [MGK]B/s' | tail -1)
         echo "  Read Speed: ${read_speed:-N/A}" | tee -a "$OUTPUT_FILE"
         
@@ -2284,33 +2657,46 @@ analyze_storage_profile() {
             echo "" | tee -a "$OUTPUT_FILE"
             echo "Random I/O Test (fio):" | tee -a "$OUTPUT_FILE"
             
-            # 4K random read IOPS
-            local fio_result=$(fio --name=randread --ioengine=libaio --iodepth=32 --rw=randread --bs=4k \
-                --direct=1 --size=256M --runtime=10 --filename="$test_dir/fio_test" --output-format=json 2>/dev/null)
+            # Choose ioengine based on environment (libaio may not work in containers)
+            local fio_engine="libaio"
+            local fio_direct=1
+            if [[ "$IS_CONTAINER" == "true" ]]; then
+                fio_engine="sync"
+                fio_direct=0
+                echo "  Using sync engine for container compatibility" | tee -a "$OUTPUT_FILE"
+            fi
             
-            if [[ -n "$fio_result" ]]; then
+            # 4K random read IOPS
+            local fio_result=$(fio --name=randread --ioengine="$fio_engine" --iodepth=32 --rw=randread --bs=4k \
+                --direct="$fio_direct" --size=256M --runtime=10 --filename="$test_dir/fio_test" --output-format=json 2>/dev/null) || true
+            
+            if [[ -n "$fio_result" ]] && [[ "$fio_result" != *"error"* ]]; then
                 local read_iops=$(echo "$fio_result" | grep -oP '"iops"\s*:\s*[\d.]+' | head -1 | grep -oP '[\d.]+')
                 local read_lat=$(echo "$fio_result" | grep -oP '"lat_ns".*?"mean"\s*:\s*[\d.]+' | head -1 | grep -oP '[\d.]+$')
                 read_lat=$(echo "scale=2; ${read_lat:-0} / 1000000" | bc 2>/dev/null || echo "N/A")
                 echo "  4K Random Read: ${read_iops:-N/A} IOPS, ${read_lat}ms latency" | tee -a "$OUTPUT_FILE"
+            else
+                echo "  4K Random Read: test failed or not supported" | tee -a "$OUTPUT_FILE"
             fi
             
             # 4K random write IOPS
-            fio_result=$(fio --name=randwrite --ioengine=libaio --iodepth=32 --rw=randwrite --bs=4k \
-                --direct=1 --size=256M --runtime=10 --filename="$test_dir/fio_test" --output-format=json 2>/dev/null)
+            fio_result=$(fio --name=randwrite --ioengine="$fio_engine" --iodepth=32 --rw=randwrite --bs=4k \
+                --direct="$fio_direct" --size=256M --runtime=10 --filename="$test_dir/fio_test" --output-format=json 2>/dev/null) || true
             
-            if [[ -n "$fio_result" ]]; then
+            if [[ -n "$fio_result" ]] && [[ "$fio_result" != *"error"* ]]; then
                 local write_iops=$(echo "$fio_result" | grep -oP '"iops"\s*:\s*[\d.]+' | head -1 | grep -oP '[\d.]+')
                 local write_lat=$(echo "$fio_result" | grep -oP '"lat_ns".*?"mean"\s*:\s*[\d.]+' | head -1 | grep -oP '[\d.]+$')
                 write_lat=$(echo "scale=2; ${write_lat:-0} / 1000000" | bc 2>/dev/null || echo "N/A")
                 echo "  4K Random Write: ${write_iops:-N/A} IOPS, ${write_lat}ms latency" | tee -a "$OUTPUT_FILE"
+            else
+                echo "  4K Random Write: test failed or not supported" | tee -a "$OUTPUT_FILE"
             fi
         else
             echo "  fio not installed - install for detailed I/O benchmarking" | tee -a "$OUTPUT_FILE"
         fi
         
         # Cleanup
-        rm -rf "$test_dir"
+        rm -rf "$test_dir" 2>/dev/null || true
     else
         echo "  Run with -m deep or -m disk for performance baseline tests" | tee -a "$OUTPUT_FILE"
     fi
@@ -2781,12 +3167,18 @@ analyze_network() {
     if command -v netstat >/dev/null 2>&1; then
         echo "" | tee -a "$OUTPUT_FILE"
         echo "TCP Connection States:" | tee -a "$OUTPUT_FILE"
-        netstat -ant 2>/dev/null | awk '{print $6}' | sort | uniq -c | sort -rn | tee -a "$OUTPUT_FILE"
-        
-        # Check for excessive connections
-        local established=$(netstat -ant 2>/dev/null | grep -c ESTABLISHED || echo "0")
-        local time_wait=$(netstat -ant 2>/dev/null | grep -c TIME_WAIT || echo "0")
-        local close_wait=$(netstat -ant 2>/dev/null | grep -c CLOSE_WAIT || echo "0")
+        if [[ "$DISTRO" == "freebsd" ]]; then
+            # FreeBSD netstat syntax
+            netstat -p tcp -an 2>/dev/null | tail -n +3 | awk '{print $NF}' | sort | uniq -c | sort -rn | tee -a "$OUTPUT_FILE"
+            local established=$(netstat -p tcp -an 2>/dev/null | grep -c ESTABLISHED || echo "0")
+            local time_wait=$(netstat -p tcp -an 2>/dev/null | grep -c TIME_WAIT || echo "0")
+            local close_wait=$(netstat -p tcp -an 2>/dev/null | grep -c CLOSE_WAIT || echo "0")
+        else
+            netstat -ant 2>/dev/null | awk '{print $6}' | sort | uniq -c | sort -rn | tee -a "$OUTPUT_FILE"
+            local established=$(netstat -ant 2>/dev/null | grep -c ESTABLISHED || echo "0")
+            local time_wait=$(netstat -ant 2>/dev/null | grep -c TIME_WAIT || echo "0")
+            local close_wait=$(netstat -ant 2>/dev/null | grep -c CLOSE_WAIT || echo "0")
+        fi
         
         echo "" | tee -a "$OUTPUT_FILE"
         echo "Established Connections: ${established}" | tee -a "$OUTPUT_FILE"
@@ -2804,7 +3196,13 @@ analyze_network() {
         # Listening ports
         echo "" | tee -a "$OUTPUT_FILE"
         echo "Top 10 listening ports:" | tee -a "$OUTPUT_FILE"
-        netstat -tuln 2>/dev/null | grep LISTEN | awk '{print $4}' | sed 's/.*://' | sort -n | uniq -c | sort -rn | head -10 | tee -a "$OUTPUT_FILE"
+        if [[ "$DISTRO" == "freebsd" ]]; then
+            # FreeBSD: use sockstat or netstat -an with LISTEN
+            sockstat -4l 2>/dev/null | tail -n +2 | awk '{print $6}' | sed 's/.*://' | sort -n | uniq -c | sort -rn | head -10 | tee -a "$OUTPUT_FILE" || \
+            netstat -an 2>/dev/null | grep LISTEN | awk '{print $4}' | sed 's/.*\.//' | sort -n | uniq -c | sort -rn | head -10 | tee -a "$OUTPUT_FILE"
+        else
+            netstat -tuln 2>/dev/null | grep LISTEN | awk '{print $4}' | sed 's/.*://' | sort -n | uniq -c | sort -rn | head -10 | tee -a "$OUTPUT_FILE"
+        fi
     elif command -v ss >/dev/null 2>&1; then
         echo "" | tee -a "$OUTPUT_FILE"
         echo "TCP Connection States:" | tee -a "$OUTPUT_FILE"
@@ -3009,7 +3407,16 @@ create_support_case() {
     done
     
     # Get system info
-    local hostname=$(hostname)
+    local hostname
+    if command -v hostname >/dev/null 2>&1; then
+        hostname=$(hostname)
+    elif [[ -f /etc/hostname ]]; then
+        hostname=$(cat /etc/hostname)
+    elif [[ -f /proc/sys/kernel/hostname ]]; then
+        hostname=$(cat /proc/sys/kernel/hostname)
+    else
+        hostname="unknown"
+    fi
     local os_info=$(cat /etc/os-release | grep PRETTY_NAME | cut -d'"' -f2)
     local kernel=$(uname -r)
     local instance_id=$(curl -s -m 2 http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null || echo "")
@@ -3199,11 +3606,17 @@ main() {
     # Detect OS and package manager
     detect_os
     
+    # Detect if running in a container
+    detect_container
+    
     show_banner
     
     log_info "Detected OS: ${OS_NAME:-$DISTRO}"
     log_info "OS Version: ${OS_VERSION:-unknown}"
     log_info "Package Manager: ${PACKAGE_MANAGER}"
+    if [[ "$IS_CONTAINER" == "true" ]]; then
+        log_info "Container Environment: ${CONTAINER_TYPE:-detected} (some hardware tests will be skipped)"
+    fi
     log_info "Starting forensics analysis in ${MODE} mode..."
     log_info "Output file: ${OUTPUT_FILE}"
     echo ""
