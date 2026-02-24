@@ -845,7 +845,7 @@ sudo pkg install sysutils/htop sysutils/btop sysutils/py-glances sysutils/py-iot
 ## 🤝 **Support**
 
 ### **Contact**
-- **Report bugs and feature requests:** [adrianrs@amazon.com](mailto:adrianrs@amazon.com)
+- **Report bugs and feature requests:** [adrianr.sanmiguel@gmail.com](mailto:adrianr.sanmiguel@gmail.com)
 
 ### **AWS Support**
 For AWS-specific issues, the tool can automatically create support cases with diagnostic data attached.
