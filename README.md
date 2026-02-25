@@ -680,6 +680,9 @@ Important: AWS Support API access requires a Business, Enterprise On-Ramp, or En
 <a id="profiling-tools"></a>
 ## Profiling Tools
 
+<details>
+<summary><strong>htop, btop, glances, iotop, sysstat, smartmontools</strong></summary>
+
 The script automatically installs these enhanced profiling tools:
 
 | Tool | Purpose | Linux Package | FreeBSD Package |
@@ -709,6 +712,8 @@ sudo pacman -S htop btop glances iotop sysstat smartmontools
 sudo pkg install sysutils/htop sysutils/btop sysutils/py-glances sysutils/py-iotop sysutils/sysstat sysutils/smartmontools
 ```
 
+</details>
+
 ---
 
 <a id="support"></a>
@@ -725,6 +730,9 @@ For AWS-specific issues, the tool can automatically create support cases with di
 <a id="important-notes-and-performance"></a>
 ## Important Notes & Performance
 
+<details>
+<summary><strong>Important Notes & Expected Performance Impact</strong></summary>
+
 - This tool requires root/sudo privileges
 - Disk testing may impact system performance temporarily
 - Automatic package installation works on Debian/Ubuntu, RHEL/CentOS/Amazon Linux, SUSE, Arch, Alpine, and FreeBSD
@@ -734,7 +742,7 @@ For AWS-specific issues, the tool can automatically create support cases with di
 - Uses only open-source utilities (no proprietary tools required)
 - No warranty or official support provided - use at your own discretion
 
-### Expected Performance Impact
+Expected Performance Impact
 
 Quick Mode (3 minutes):
 - CPU: <5% overhead - mostly reading /proc and system stats
@@ -770,6 +778,8 @@ General Guidelines:
 - Monitoring tools (mpstat, iostat, vmstat) run for 10-second intervals
 - Database queries target system/performance tables only, not user data
 - All operations are non-blocking and use minimal system resources
+
+</details>
 
 ---
 
