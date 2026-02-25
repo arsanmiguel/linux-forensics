@@ -18,7 +18,7 @@ Key Features:
 - Automatic, version-aware dependency installation (Debian/Ubuntu, RHEL/CentOS/Amazon Linux, SUSE, Arch, Alpine, FreeBSD)
 - Enhanced profiling tools: htop, btop, glances (auto-installed)
 
-TL;DR — Run it now
+TL;DR - Run it now
 ```bash
 git clone https://github.com/arsanmiguel/linux-forensics.git && cd linux-forensics
 chmod +x invoke-linux-forensics.sh
@@ -789,21 +789,21 @@ General Guidelines:
 <details>
 <summary><strong>Version History</strong></summary>
 
-- v1.3 (February 2026) – README overhaul
+- v1.3 (February 2026) - README overhaul
   - Structure and flow aligned with unix-forensics: table of contents (Contents) with anchors, TL;DR, Quick links
   - Replaced long “Available Tool” section with a short blurb; Use Cases and What Bottlenecks are subsections of Examples
   - Section order: Troubleshooting before Configuration; Profiling Tools and Important Notes & Performance are collapsible
   - Removed emojis; slimmed Key Features; consistent section headers and styling
-- v1.2 (February 2026) – FreeBSD support
+- v1.2 (February 2026) - FreeBSD support
   - FreeBSD 12, 13, 14+ with pkg package manager
   - GEOM storage subsystem (gpart, geom, camcontrol)
   - ZFS pool alignment (ashift) analysis
   - BSD disklabel detection
   - FreeBSD-specific package mappings
-- v1.1 (February 2026) – Storage profiling and distro expansion
+- v1.1 (February 2026) - Storage profiling and distro expansion
   - Comprehensive storage profiling; improved OS version detection
   - Expanded distro support (Arch, Alpine, Oracle Linux); automatic storage tool installation
-- v1.0 (January 2026) – Initial release
+- v1.0 (January 2026) - Initial release
   - Comprehensive forensics and AWS Support integration
 
 </details>
