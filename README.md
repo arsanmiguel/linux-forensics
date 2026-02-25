@@ -1,5 +1,6 @@
 # Linux & FreeBSD Performance Forensic Tools
 
+<a id="overview"></a>
 ## Overview
 
 A comprehensive Bash-based diagnostic tool for Linux and FreeBSD servers that automatically detects performance bottlenecks and can create AWS Support cases with detailed forensic data. Originally created for AWS DMS migrations - run this on your SOURCE DATABASE SERVER. Now useful for any Linux/FreeBSD performance troubleshooting scenario. Uses only open-source utilities and automatically installs missing dependencies when possible.
@@ -17,8 +18,33 @@ Key Features:
 - Automatic, version-aware dependency installation (Debian/Ubuntu, RHEL/CentOS/Amazon Linux, SUSE, Arch, Alpine, FreeBSD)
 - Enhanced profiling tools: htop, btop, glances (auto-installed)
 
+TL;DR — Run it now
+```bash
+git clone https://github.com/arsanmiguel/linux-forensics.git && cd linux-forensics
+chmod +x invoke-linux-forensics.sh
+sudo ./invoke-linux-forensics.sh
+```
+Then read on for AWS Support or troubleshooting.
+
+Quick links: [Install](#installation) · [Usage](#available-tool) · [Troubleshooting](#troubleshooting)
+
+Contents
+- [Overview](#overview)
+- [Quick Start](#quick-start)
+- [Installation](#installation)
+- [Examples](#examples)
+- [Use Cases](#use-cases)
+- [What Bottlenecks Can Be Found](#what-bottlenecks-can-be-found)
+- [Troubleshooting](#troubleshooting)
+- [Configuration (AWS Support)](#configuration)
+- [Support](#support)
+- [Important Notes & Performance](#important-notes-and-performance)
+- [Profiling Tools](#profiling-tools)
+- [Version History](#version-history)
+
 ---
 
+<a id="quick-start"></a>
 ## Quick Start
 
 ### Prerequisites
@@ -47,6 +73,7 @@ Fully Supported (Automatic Package Installation with Version Detection):
 
 Note: The script automatically detects your OS and version, then selects the correct package manager and package names. For example, RHEL 8+ uses `dnf` while RHEL 7 uses `yum`, and iSCSI tools are named differently across distros (`open-iscsi` vs `iscsi-initiator-utils`).
 
+<a id="installation"></a>
 ### Installation
 
 1. Clone the repository:
@@ -67,171 +94,15 @@ sudo ./invoke-linux-forensics.sh
 
 ---
 
-## Available Tool
-
-### invoke-linux-forensics.sh
-A complete Linux performance diagnostic tool - comprehensive forensics with automatic issue detection.
-
-<details>
-<summary><strong>What it does</strong></summary>
-
-System Detection & Setup:
-- Automatically detects OS distribution and version
-- Identifies available package manager (apt, yum, dnf, zypper, pacman, apk)
-- Checks for required utilities (mpstat, iostat, vmstat, netstat, bc)
-- Automatically installs missing packages on supported distros
-- Continues with graceful degradation if tools unavailable
-
-CPU Forensics:
-- Load average analysis (per-core calculation)
-- CPU utilization sampling (10-second average via mpstat)
-- Context switch rate monitoring
-- CPU steal time detection (hypervisor contention)
-- Top CPU-consuming processes
-- htop snapshot - enhanced process view with CPU/memory bars
-- btop availability - modern resource monitor with graphs
-- SAR CPU analysis: Real-time sampling (sar -u, sar -q, sar -P ALL)
-- Historical CPU data: Automatic detection of /var/log/sa data
-
-Memory Forensics:
-- Memory usage and availability analysis
-- Swap usage monitoring
-- Page fault rate detection
-- Memory pressure indicators (PSI)
-- Slab memory usage analysis
-- OOM (Out of Memory) killer detection
-- Memory leak candidate identification
-- Huge pages status
-- Top memory-consuming processes
-- SAR memory analysis: Real-time sampling (sar -r, sar -S, sar -B)
-- Historical memory data: Automatic detection of /var/log/sa data
-
-Disk I/O Forensics:
-- Filesystem usage monitoring
-- I/O wait time analysis (iostat)
-- Read/write performance testing (dd-based)
-- Dropped I/O detection
-- Per-device statistics
-- SAR disk analysis: Real-time sampling (sar -b, sar -d, sar -dp)
-- Historical disk I/O data: Automatic detection of /var/log/sa data
-
-Storage Profiling:
-- Partition scheme analysis (GPT vs MBR with >2TB warnings)
-- Partition alignment analysis (4K/1MB alignment check for SSD/SAN/Cloud performance)
-- Boot configuration detection (UEFI vs Legacy BIOS, Secure Boot status)
-- Partition type identification (ESP, BIOS Boot, LVM, RAID, swap)
-- Filesystem type detection (ext4, XFS, Btrfs, ZFS, bcachefs, etc.)
-- Storage topology detection (block devices, partitions, LVM, software RAID)
-- Storage tiering analysis (SSD vs HDD vs NVMe identification)
-- AWS EBS volume detection and optimization recommendations (gp2→gp3, io1→io2)
-- Azure/GCP cloud storage detection
-- SMART health status monitoring (drive health, wear level, errors, power-on hours)
-- Capacity profiling (top directories by size, large file detection, inode usage)
-- Filesystem fragmentation analysis (ext4, XFS)
-- SAN/NAS/iSCSI detection (multipath, Fibre Channel HBAs, NFS/CIFS mounts)
-- Storage performance baseline testing (sequential I/O, random IOPS with fio)
-- Automatic tool installation (smartmontools, nvme-cli, lvm2, fio, etc.)
-
-Database Forensics:
-- Automatic detection of running databases
-- Supported: MySQL/MariaDB, PostgreSQL, MongoDB, Cassandra, Redis, Oracle, SQL Server, Elasticsearch
-- DBA-level query analysis:
-  - Top 5 queries by CPU time and resource consumption (all platforms)
-  - Long-running queries/operations (>30 seconds)
-  - Blocking and wait state analysis (SQL Server, Oracle)
-  - Connection pool exhaustion and rejection tracking (all platforms)
-  - Thread pool monitoring (Elasticsearch)
-  - Slow operation profiling (MongoDB, Redis)
-- Connection count monitoring
-- Process resource usage (CPU, memory)
-- Connection churn analysis (TIME_WAIT)
-
-Network Forensics:
-- Interface status and statistics
-- TCP connection state analysis
-- Retransmission detection
-- RX/TX error monitoring
-- Dropped packet analysis
-- Socket memory usage
-- Network throughput analysis
-- Buffer/queue settings
-- SAR network analysis: Real-time sampling (sar -n DEV/EDEV/TCP/ETCP/SOCK)
-- Historical network data: Automatic detection of /var/log/sa data
-
-Glances System Overview:
-- Comprehensive system snapshot (CPU, memory, load, disk I/O, network)
-- JSON export for detailed analysis (in deep mode)
-- Real-time monitoring available via interactive mode
-- Docker/container monitoring support
-
-Bottleneck Detection:
-- Automatically identifies performance issues
-- Categorizes by severity (Critical, High, Medium, Low)
-- Provides threshold comparisons
-- Creates AWS Support case with all diagnostic data
-
-</details>
-
-<details>
-<summary><strong>Usage</strong></summary>
-
-```bash
-# Quick diagnostics (3 minutes)
-sudo ./invoke-linux-forensics.sh -m quick
-
-# Standard diagnostics (5-10 minutes) - recommended
-sudo ./invoke-linux-forensics.sh -m standard
-
-# Deep diagnostics with I/O testing (15-20 minutes)
-sudo ./invoke-linux-forensics.sh -m deep
-
-# Auto-create support case if issues found (3 minutes)
-sudo ./invoke-linux-forensics.sh -m standard -s -v high
-
-# Disk-only diagnostics
-sudo ./invoke-linux-forensics.sh -m disk
-
-# CPU-only diagnostics
-sudo ./invoke-linux-forensics.sh -m cpu
-
-# Memory-only diagnostics
-sudo ./invoke-linux-forensics.sh -m memory
-
-# Custom output directory
-sudo ./invoke-linux-forensics.sh -m standard -o /var/log
-```
-
-Options:
-- `-m, --mode` - Diagnostic mode: quick, standard, deep, disk, cpu, memory
-- `-s, --support` - Create AWS Support case if issues found
-- `-v, --severity` - Support case severity: low, normal, high, urgent, critical
-- `-o, --output` - Output directory (default: current directory)
-- `-h, --help` - Show help message
-
-</details>
-
-<details>
-<summary><strong>Output Example</strong></summary>
-
-```
-BOTTLENECKS DETECTED: 3 performance issue(s) found
-
-  CRITICAL ISSUES (1):
-    • Memory: Low available memory
-
-  HIGH PRIORITY (2):
-    • Disk: High I/O wait time
-    • CPU: High load average
-
-Detailed report saved to: linux-forensics-20260114-070000.txt
-AWS Support case created: case-123456789
-```
-
-</details>
+<a id="available-tool"></a>
+The script runs system diagnostics and writes a report to a timestamped file; optional AWS Support case creation when issues are found. Usage: `sudo ./invoke-linux-forensics.sh [-m mode] [-s] [-v severity] [-o dir]`.
 
 ---
 
+<a id="examples"></a>
 ## Examples
+
+Run all script commands as root or with sudo.
 
 <details>
 <summary><strong>Example 1: Quick Health Check</strong></summary>
@@ -263,9 +134,11 @@ Output: Detailed disk I/O testing and analysis
 
 </details>
 
----
+### Use Cases
 
-## Use Cases
+<a id="use-cases"></a>
+<details>
+<summary><strong>Use Cases</strong> (DMS, DB perf, web server, EC2, incident response)</summary>
 
 <details>
 <summary><strong>AWS DMS Migrations</strong></summary>
@@ -379,9 +252,13 @@ sudo ./invoke-linux-forensics.sh -m deep -s -v urgent
 
 </details>
 
----
+</details>
 
-## What Bottlenecks Can Be Found?
+### What Bottlenecks Can Be Found
+
+<a id="what-bottlenecks-can-be-found"></a>
+<details>
+<summary><strong>What Bottlenecks Can Be Found?</strong> (What the script can detect)</summary>
 
 The tool automatically detects:
 
@@ -469,68 +346,11 @@ Supported Databases:
 
 </details>
 
----
-
-## Configuration
-
-### AWS Support Integration
-
-The tool can automatically create AWS Support cases when performance issues are detected.
-
-<details>
-<summary><strong>Setup Instructions</strong></summary>
-
-Setup:
-1. Install AWS CLI:
-```bash
-# Amazon Linux / RHEL / CentOS
-sudo yum install -y aws-cli
-
-# Ubuntu / Debian
-sudo apt-get install -y awscli
-
-# Or use pip
-pip3 install awscli
-```
-
-2. Configure AWS credentials:
-```bash
-aws configure
-```
-
-3. Verify Support API access:
-```bash
-aws support describe-services
-```
-
-Required IAM Permissions:
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": [
-        "support:CreateCase",
-        "support:AddAttachmentsToSet",
-        "support:AddCommunicationToCase"
-      ],
-      "Resource": "*"
-    }
-  ]
-}
-```
-
-Important: AWS Support API access requires a Business, Enterprise On-Ramp, or Enterprise Support plan. If you don't have one of these plans, the script will:
-- Detect the API access error
-- Skip support case creation
-- Continue with diagnostic report generation
-- Save all forensic data locally for manual review
-
 </details>
 
 ---
 
+<a id="troubleshooting"></a>
 ## Troubleshooting
 
 <details>
@@ -796,6 +616,68 @@ sar -u -s 09:00:00 -e 17:00:00 -f /var/log/sa/sa15
 
 ---
 
+<a id="configuration"></a>
+## Configuration
+
+### AWS Support Integration
+
+The tool can automatically create AWS Support cases when performance issues are detected.
+
+<details>
+<summary><strong>Setup Instructions</strong></summary>
+
+Setup:
+1. Install AWS CLI:
+```bash
+# Amazon Linux / RHEL / CentOS
+sudo yum install -y aws-cli
+
+# Ubuntu / Debian
+sudo apt-get install -y awscli
+
+# Or use pip
+pip3 install awscli
+```
+
+2. Configure AWS credentials:
+```bash
+aws configure
+```
+
+3. Verify Support API access:
+```bash
+aws support describe-services
+```
+
+Required IAM Permissions:
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "support:CreateCase",
+        "support:AddAttachmentsToSet",
+        "support:AddCommunicationToCase"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+Important: AWS Support API access requires a Business, Enterprise On-Ramp, or Enterprise Support plan. If you don't have one of these plans, the script will:
+- Detect the API access error
+- Skip support case creation
+- Continue with diagnostic report generation
+- Save all forensic data locally for manual review
+
+</details>
+
+---
+
+<a id="profiling-tools"></a>
 ## Profiling Tools
 
 The script automatically installs these enhanced profiling tools:
@@ -829,13 +711,7 @@ sudo pkg install sysutils/htop sysutils/btop sysutils/py-glances sysutils/py-iot
 
 ---
 
-## What's Included
-
-- `invoke-linux-forensics.sh` - Comprehensive forensics tool with bottleneck detection
-- `README.md` - This documentation
-
----
-
+<a id="support"></a>
 ## Support
 
 ### Contact
@@ -846,7 +722,8 @@ For AWS-specific issues, the tool can automatically create support cases with di
 
 ---
 
-## Important Notes
+<a id="important-notes-and-performance"></a>
+## Important Notes & Performance
 
 - This tool requires root/sudo privileges
 - Disk testing may impact system performance temporarily
@@ -896,6 +773,7 @@ General Guidelines:
 
 ---
 
+<a id="version-history"></a>
 ## Version History
 
 - v1.2 (February 2026) - Added FreeBSD support
