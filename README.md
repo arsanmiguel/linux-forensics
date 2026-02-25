@@ -786,6 +786,9 @@ General Guidelines:
 <a id="version-history"></a>
 ## Version History
 
+<details>
+<summary><strong>Version History</strong></summary>
+
 - v1.3 (February 2026) – README overhaul
   - Structure and flow aligned with unix-forensics: table of contents (Contents) with anchors, TL;DR, Quick links
   - Replaced long “Available Tool” section with a short blurb; Use Cases and What Bottlenecks are subsections of Examples
@@ -802,6 +805,8 @@ General Guidelines:
   - Expanded distro support (Arch, Alpine, Oracle Linux); automatic storage tool installation
 - v1.0 (January 2026) – Initial release
   - Comprehensive forensics and AWS Support integration
+
+</details>
 
 ---
 
